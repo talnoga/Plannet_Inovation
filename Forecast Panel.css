@@ -1,1 +1,112 @@
+/* Container and header-panel styling */
+#container {
+    font-family: Arial, Helvetica, sans-serif;
+}
 
+#header-panel {
+    padding: 10px;
+    font-size: 12px;
+    margin-top: 10px;
+}
+
+#header-panel + div h2 {
+    margin-bottom: 10px;
+}
+
+#labourBudget{
+    color: #10042781;
+}
+
+/* Bold styling for header-label */
+#header-panel .header-label {
+    font-weight: bold;
+    font-size: 14px;
+    color: #333;
+    display: inline-block;
+    margin-right: 5px;
+}
+
+/* Select and labour-budget styles */
+.header-panel select {
+    padding: 5px;
+    font-size: 12px;
+    width: 150px;
+}
+
+.header-panel .labour-budget {
+    font-size: 14px;
+}
+
+.clear:after {
+    content: "";
+    display: table;
+    clear: both;
+}
+
+/* Table panel styling */
+.table-panel table {
+    border: 1px solid #ccc;
+    border-collapse: collapse;
+    text-align: left;
+    margin-top: 10px;
+}
+
+.table-panel table td {
+    padding: 5px;
+    border: 1px solid #ccc;
+}
+
+.table-panel thead td {
+    background: #1691ca;
+    color: #fff;
+}
+
+.table-panel table td.year-seprator {
+    border-left-width: 3px;
+    border-left-color: #666;
+}
+
+.table-panel table td.year-right-seprator {
+    border-right-width: 3px;
+    border-right-color: #666;
+}
+
+#months-row td {
+    text-align: center;
+    width: 80px;
+    background: #1691ca;
+}
+
+#currentMonth td {
+    background: #999900;
+}
+
+#years-row td {
+    text-align: center;
+    width: 80px;
+    background: #006699;
+}
+
+#header-row td, #data-header-row td {
+    text-align: center;
+    width: 80px;
+    background: #006699;
+}
+
+tbody td {
+    text-align: center;
+    vertical-align: top;
+}
+
+.summaryTotalCell {
+    background: #999;
+    color: #fff;
+    font-weight: bold;
+}
+
+.roleCell {
+    background: #1691ca;
+    color: #ffffff;
+    font-weight: normal;
+    font-size: 11px;
+}
