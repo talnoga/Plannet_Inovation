@@ -14,6 +14,23 @@ var laborBudget = data.laborBudget;
 var workItemExternalID = data.currentProject.ExternalID;
 var WorkItemtype= data.WorkItemtype;
 var dataModel = new Map();
+var selectedForecastType;
+const FORECAST_TYPES = {
+    EFFORTS: "efforts",
+    FINANCIALS: "financials"
+};
+
+const FORECAST_HEADERS = {
+    EFFORTS: "Forecast per Resource by Effort (Days)",
+    FINANCIALS: "Forecast per Resource by Financials"
+};
+
+//left totals headers
+const FORECST_TOTLAS_HEADERS = {
+    [FORECAST_TYPES.EFFORTS]: ["Work(D)", "Actual Regular Effort (D)","Forecast Effort Balance (D)"],
+    [FORECAST_TYPES.FINANCIALS]: ["Budget", "Act. Booked","Remaining Forecast Fees","EAC Fees"]
+};
+
 const HOURS_PER_DAY= data.hoursPerDay;
 const thisMonday = getThisMondayOrFirstWorkingDay();
 const lastDayOfThisMondayMonth = getLastDayOfThisMondayMonth(new Date(thisMonday));
@@ -30,6 +47,10 @@ class UserRecord {
         // Forecast effort balance variables
         this.forecastTaskAssignmentUntilEOM = 0;
         this.forecastProjectAssignmentUntilEOM = 0;
+
+        // Additions for Budget and Actual Booked
+        this.budget = 0;
+        this.actualBooked = 0;
     }
 
     // Setters for forecastTaskAssignmentUntilEOM and forecastProjectAssignmentUntilEOM
@@ -57,6 +78,34 @@ class UserRecord {
                 projectAssignment, 
                 taskAssignment, 
                 actualApproved 
+            });
+            
+            if (!this.firstMonthYear || (year < this.firstMonthYear.year) || 
+                (year === this.firstMonthYear.year && month < this.firstMonthYear.month)) {
+                this.firstMonthYear = { year, month };
+            }
+
+            if (!this.lastMonthYear || (year > this.lastMonthYear.year) || 
+                (year === this.lastMonthYear.year && month > this.lastMonthYear.month)) {
+                this.lastMonthYear = { year, month };
+            }
+        }
+    }
+
+    // Method to add or update monthly record for Budget and Actual Booked
+    addOrUpdateMonthlyRecordForFinancials(year, month, budget = 0, actualBooked = 0) {
+        const dateKey = `${year}-${String(month).padStart(2, '0')}`; // Unique key in YYYY-MM format
+
+        if (this.monthlyRecords.has(dateKey)) {
+            const existingRecord = this.monthlyRecords.get(dateKey);
+            existingRecord.budget += budget;
+            existingRecord.actualBooked += actualBooked;
+        } else {
+            this.monthlyRecords.set(dateKey, { 
+                year, 
+                month, 
+                budget, 
+                actualBooked 
             });
             
             if (!this.firstMonthYear || (year < this.firstMonthYear.year) || 
@@ -102,44 +151,133 @@ class UserRecord {
     getForecastEffortBalanceTaskAssignment(){
         const nextMonthInfo = getNextMonthYear(new Date(this.thisMonday));
         const totalTaskAssignmentUntilEnd = this.calculateTotalFrom("taskAssignment", nextMonthInfo.year, nextMonthInfo.month);
-        return this.forecastTaskAssignmentUntilEOM+totalTaskAssignmentUntilEnd;
+        return this.forecastTaskAssignmentUntilEOM + totalTaskAssignmentUntilEnd;
     }
 
     //will return the forecast Project Assignment Until End of Month plus all the forecast from next month until the end period
     getForecastEffortBalanceProjectAssignment() {
         const nextMonthInfo = getNextMonthYear(new Date(this.thisMonday));
         const totalProjectAssignmentUntilEnd = this.calculateTotalFrom("projectAssignment", nextMonthInfo.year, nextMonthInfo.month);
-        return this.forecastProjectAssignmentUntilEOM +totalProjectAssignmentUntilEnd;
+        return this.forecastProjectAssignmentUntilEOM + totalProjectAssignmentUntilEnd;
     }
 }
 
 
+class CurrencyExchangeRecord {
+    constructor(id, baseCurrency, quoteCurrency, effectiveFrom, exchangeRate) {
+        this.id = id; // Unique identifier for the exchange rate record
+        this.baseCurrency = baseCurrency; // Base currency object (e.g., "AUD")
+        this.quoteCurrency = quoteCurrency; // Quote currency object (e.g., "EUR")
+        this.effectiveFrom = new Date(effectiveFrom); // Date when the rate becomes effective
+        this.exchangeRate = exchangeRate; // The exchange rate value
+    }
+
+    // Getter for the ID
+    getId() {
+        return this.id;
+    }
+
+    // Getter for the base currency
+    getBaseCurrency() {
+        return this.baseCurrency;
+    }
+
+    // Getter for the quote currency
+    getQuoteCurrency() {
+        return this.quoteCurrency;
+    }
+
+    // Getter for the effective date
+    getEffectiveFrom() {
+        return this.effectiveFrom;
+    }
+
+    // Getter for the exchange rate
+    getExchangeRate() {
+        return this.exchangeRate;
+    }
+}
+
+class CurrencyExchange {
+    constructor() {
+        this.records = []; // Array to hold all the exchange rate records
+    }
+
+    // Method to add an exchange rate record
+    addRecord(record) {
+        this.records.push(record);
+    }
+
+    // Method to get the most recent exchange rate for a given currency and month
+    getExchangeRateForCurrencyAndMonth(baseCurrency, quoteCurrency, targetMonth) {
+        // Convert targetMonth to a Date object representing the first day of the month
+        const targetDate = new Date(targetMonth);
+        targetDate.setDate(1);
+        
+        let closestRecord = null;
+
+        // Find the closest record with an effective date <= targetDate
+        for (const record of this.records) {
+            const recordEffectiveDate = record.getEffectiveFrom();
+
+            if (record.getBaseCurrency() === baseCurrency &&
+                record.getQuoteCurrency() === quoteCurrency) {
+                if (recordEffectiveDate <= targetDate) {
+                    if (!closestRecord || recordEffectiveDate > closestRecord.getEffectiveFrom()) {
+                        closestRecord = record;
+                    }
+                }
+            }
+        }
+
+        // If no record was found in the target range, return the latest record available
+        if (!closestRecord) {
+            closestRecord = this.records.reduce((latest, record) => {
+                return (latest.getEffectiveFrom() > record.getEffectiveFrom()) ? latest : record;
+            }, this.records[0]);
+        }
+
+        return closestRecord ? closestRecord.getExchangeRate() : null;
+    }
+}
+
 
 $(function () {
-    var yearsRow, tdCell, roleCell;    yearsRow = $("#years-row");
-
+    var yearsRow, tdCell, roleCell;   
+    
+    yearsRow = $("#years-row");
 
     try {
 
+        selectedForecastType= getSelectedForecastType(); 
+
+        console.log("Current Project: " + data.currentProject.SYSID);		
+        var forecastType = document.getElementById('forecastType');
+        forecastType.addEventListener('change', function(event) {
+            forecastTypeSwitch(event);
+        });				
+
         var numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
+        
+        const headers = FORECST_TOTLAS_HEADERS[selectedForecastType] || ["Unknown", "Unknown","Unknown"];
 
         //now add back the 3 headers removed Work(D), Actual Regular Effort (D),Forecast Effort Balance (D)
-        tdCell = $("<td rowspan='" + 4 + "'>Work(D)</td>");
+        tdCell = $("<td rowspan='" + 4 + "'>"+headers[0]+"</td>");
         tdCell.addClass("year-seprator");
         yearsRow.append(tdCell);
-        tdCell = $("<td rowspan='" + 4 + "'>Actual Regular Effort (D)</td>");
+        tdCell = $("<td rowspan='" + 4 + "'>"+headers[1]+"</td>");
         yearsRow.append(tdCell);
-        tdCell = $("<td rowspan='" + 4 + "'>Forecast Effort Balance (D)</td>");
+        tdCell = $("<td rowspan='" + 4 + "'>"+headers[2]+"</td>");
         yearsRow.append(tdCell);
         
-        yearsRow.append(tdCell);
+        
 //        if (monthNameList[datePickerStart.getMonth()] == "Jan") {
    //         roleCell.addClass("year-right-seprator");
    //     } else {
    //         roleCell.removeClass("year-right-seprator");
    //     }
 
-        console.log("Current Project: " + data.currentProject.SYSID);						
+       
         //load data
         executeQuery(numOfMonths);
     } catch (err) {
@@ -147,6 +285,50 @@ $(function () {
     }
 
 });
+
+//will get the selected forecast types 
+function getSelectedForecastType() {
+    return $('#forecastType').val();
+}
+
+/*
+Based on the selected forecast type update the total headers 
+Add or remove a cell in the switch 
+*/
+function switchTotalHeaders() {
+    const yearsRow = $("#years-row"); // The row containing the cells
+    const headers = FORECST_TOTLAS_HEADERS[selectedForecastType] || ["Unknown", "Unknown", "Unknown", "Unknown"];
+
+    // Get the number of years to calculate if we need to remove or add a cell from the end based on the selected forecast type
+    const numOfYears = getYearsBetweenDates()+1;//it's numb er of years plus the left resource cell
+
+    // Add cells based on the selected forecast type
+    // Ensure that the row has the correct number of cells (3 for Efforts, 4 for Financials)
+    const currentNumOfCells = yearsRow.children("td").length;
+
+    // If Financials is selected and we need to add a new cell
+    if (selectedForecastType === FORECAST_TYPES.FINANCIALS && currentNumOfCells < numOfYears + 4) {
+        const tdCell = $("<td rowspan='4'>" + headers[3] + "</td>");
+        yearsRow.append(tdCell);
+    }
+    // If Efforts is selected and we need to remove the last cell
+    else if (selectedForecastType === FORECAST_TYPES.EFFORTS && currentNumOfCells > numOfYears + 3) {
+        yearsRow.children("td").last().remove();
+    }
+
+    // Update the text of existing cells starting after the numOfYears count
+    yearsRow.children("td").each(function (index) {
+        // Update only the cells starting after the numOfYears index
+        if (index >= numOfYears) {
+            // Make sure the index doesn't go beyond the length of the headers array
+            if (index - numOfYears < headers.length) {
+                $(this).text(headers[index - numOfYears]);
+            }
+        }
+    });
+}
+
+
 
 
 function executeQuery(nomOfMonths){
@@ -178,17 +360,32 @@ function executeForecastQuery(nomOfMonths){
     queryMore(0, resultQry, buildThisMonthForecastDataModel, query,nomOfMonths);
 }
 
+/* willl be used for switching the selection between efforts and dollars
+ */
+function forecastTypeSwitch(){
+    selectedForecastType= getSelectedForecastType(); 
+    console.log(selectedForecastType);
+    //first switch the headers values
+    switchDataRowCells($("#data-header-row"),selectedForecastType);
+    updatePanelHeader(selectedForecastType);
+    switchTotalHeaders() ;//replce the totals headers     
+}
 
 
-/*
-Will be called for cleaning the TD's of table headers
-*/
-function removeTRTDs(fromSelector) {
-    var node;
-    $(fromSelector).find("td").each(function () {
-        node = this;
-        $(this).remove();
-    });
+//switch the header 
+function updatePanelHeader(selectedForecastType) {
+    var panelHeader = $("#panel-header");
+
+    if (panelHeader.length) {
+        // Switch the text based on the selected forecast type using the FORECAST_HEADERS object
+         if (selectedForecastType === FORECAST_TYPES.EFFORTS) { 
+            panelHeader.text(FORECAST_HEADERS.EFFORTS);
+        } else if (selectedForecastType === FORECAST_TYPES.FINANCIALS) {
+            panelHeader.text(FORECAST_HEADERS.FINANCIALS);
+        } else {
+            panelHeader.text("Unknown Forecast Type"); // Default text for unrecognized types
+        }
+    }
 }
 
 
@@ -307,13 +504,23 @@ function iterateOnMonthsRange(isInit) {
         monthsRow.append(tdCell);
 
         //now add the data cell
-        tdCell = $("<td>For.</td>")
+        if (selectedForecastType === FORECAST_TYPES.EFFORTS) {
+            tdCell = $("<td>For.</td>")
+        } else if (selectedForecastType === FORECAST_TYPES.FINANCIALS) {
+            tdCell = $("<td>Budget</td>")
+        }    
+        
 
         if (monthNameList[date.getMonth()] == "Jan") {
             tdCell.addClass("year-seprator");
         }
         dataRow.append(tdCell);
-        tdCell = $("<td>Act.</td>")
+
+        if (selectedForecastType === FORECAST_TYPES.EFFORTS) {
+            tdCell = $("<td>Act.</td>")
+        } else if (selectedForecastType === FORECAST_TYPES.FINANCIALS) {
+            tdCell = $("<td>Act. Booked</td>")
+        }         
         dataRow.append(tdCell);
 
         date.setMonth(date.getMonth() + 1);
@@ -323,6 +530,30 @@ function iterateOnMonthsRange(isInit) {
     //console.log("Total Months: " + j);
     return j;
     //return resultList;
+}
+
+
+//will switch the pairs of the datatimephase headers
+function switchDataRowCells(dataRow, selectedForecastType) {
+    // Define text pairs for the cells
+    const CELL_VALUE_MAP = {
+        [FORECAST_TYPES.EFFORTS]: ["For.", "Act."],
+        [FORECAST_TYPES.FINANCIALS]: ["Budget", "Act. Booked"]
+    };
+
+    // Get the appropriate pair for the selected forecast type
+    const pair = CELL_VALUE_MAP[selectedForecastType] || ["Unknown", "Unknown"];
+
+    // Iterate through existing cells in pairs
+    dataRow.find("td").each(function (index, cell) {
+        if (index % 2 === 0) {
+            // First cell in the pair
+            $(cell).text(pair[0]);
+        } else {
+            // Second cell in the pair
+            $(cell).text(pair[1]);
+        }
+    });
 }
 
 
@@ -630,7 +861,23 @@ function buildThisMonthForecastDataModel(result, numOfMonths) {
    drawData(result, numOfMonths);
 }
 
+//will get the number of years between the start and end dates for calcualting the last cell int he years-raw
+function getYearsBetweenDates() {
+    // Convert both dates to Date objects
+    var startDate = new Date(fromStartDate);
+    var endDate = new Date(toEndDate);
 
+    // Calculate the difference in years
+    var yearsDifference = endDate.getFullYear() - startDate.getFullYear();
+
+    // Adjust for the months and days if the end date is before the anniversary of the start date in the end year
+    var monthDifference = endDate.getMonth() - startDate.getMonth();
+    if (monthDifference < 0 || (monthDifference === 0 && endDate.getDate() < startDate.getDate())) {
+        yearsDifference--;
+    }
+
+    return yearsDifference;
+}
 
 // Helper functions
 function getDateYear(date) {
