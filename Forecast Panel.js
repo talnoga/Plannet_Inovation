@@ -12,9 +12,10 @@ var monthNameList = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 var data = API.Context.getData();
 var fromStartDate = data.projectStartDate;
 var toEndDate = data.projectDueDate;
+var projExternalID=data.projExternalID;
 var laborBudget = data.laborBudget;
 var workItemExternalID = data.currentProject.ExternalID;
-var projectRateCard= data.currentProject.RateCard.ExternalID;
+var projectRateCard= data.projectRateCard;
 var currencyType= data.currentProject.RevenueCurrencyType.name;
 var WorkItemtype= data.WorkItemtype;
 var dataModel = new Map();
@@ -227,7 +228,8 @@ class UserRecord {
             if ((record.year > startYear) || 
                 (record.year === startYear && record.month >= startMonth)) {
                 let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, record.month, record.year);   
-                total += record[field]*JobTitlerates.regularRate.value || 0;
+                let effortInHours= record[field]* HOURS_PER_DAY;
+                total += effortInHours*JobTitlerates.regularRate.value || 0;
             }
         }
         return total;
@@ -662,7 +664,7 @@ function executeFinancialQuery(nomOfMonths){
      removeTBodyRows();
 	API.Utils.beginLoading();
 		
-    const query = QueryBuilder(WorkItemtype === "Project" ? 5 : 0);
+    const query = QueryBuilder(WorkItemtype === "Project" ? 5 : 7);
 	
 	//load data with pagings 
     queryMore(0, resultQry, buidFinancialDataModel, query,nomOfMonths);
@@ -728,7 +730,7 @@ function buidFinancialDataModel(result, numOfMonths){
 function executeActualBookedQuery(nomOfMonths){
     var resultQry = new Array();
    
-    const query = QueryBuilder(WorkItemtype === "Project" ? 6 : 0);
+    const query = QueryBuilder(WorkItemtype === "Project" ? 6 : 8);
 	
 	//load data with pagings 
     queryMore(0, resultQry, addActualBookedToDataModel, query,nomOfMonths);
@@ -1026,6 +1028,10 @@ function QueryBuilder(caseNumber) {
             return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,C_MarkupRevVariance,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
         case 6://get project level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
+        case 7://get financials for Task level
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,C_MarkupRevVariance,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
+        case 8://get Task level actual booed values
+            return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
         default:
             return ""; // Default case to avoid errors
     }
@@ -1121,9 +1127,9 @@ function drawData(result, numOfMonths){
 			try{
 				if (j% 2===0){
                     if(laborBudget=="Task Assignment"){
-                        dataToSet = Number(recData.taskAssignment).toFixed(1);		
+                        dataToSet = Number(recData.taskAssignment).toFixed(2);		
                     }else{
-                        dataToSet = Number(recData.projectAssignment).toFixed(1);		
+                        dataToSet = Number(recData.projectAssignment).toFixed(2);		
                     }
 					
 				}  else {
@@ -1653,7 +1659,7 @@ function addTotalRow(tbodyTbl,numOfMonths){
 	 row.append(cell);
 	 cell.addClass("summaryTotalCell");
 	
-	for (var j = 0; j <((numOfMonths*NUM_OF_DATA_COLUMNS )+NUM_OF_COLUMNS_AFTER_DATA); j++) {		  
+	for (var j = 0; j <((numOfMonths*NUM_OF_DATA_COLUMNS )+(selectedForecastType === FORECAST_TYPES.FINANCIALS ? NUM_OF_COLUMNS_AFTER_DATA_FINANCE : NUM_OF_COLUMNS_AFTER_DATA)); j++) {		  
 		yYear   = date.getFullYear();
 		mMonth  = date.getMonth() + 1;
 		recKey = yYear+"-"+mMonth;
