@@ -1,3 +1,28 @@
+/* save button styling start */
+
+.btn {
+    background-color: #001f4d; /* Navy color */
+    color: white;
+    padding: 8px 16px; /* Smaller size */
+    border: none; /* Remove border for a cleaner look */
+    border-radius: 10px; /* Subtle rounding */
+    font-size: 14px; /* Slightly smaller text */
+    font-weight: bold; /* Bold text */
+    font-family: Arial, sans-serif;
+    cursor: pointer;
+    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.3); /* Shadow for button effect */
+    transition: all 0.3s ease; /* Smooth transition for hover */
+}
+
+.btn:hover {
+    background-color: #0048b6; /* Lighter blue on hover */
+    box-shadow: 4px 4px 8px rgba(0, 0, 0, 0.4); /* Deeper shadow on hover */
+    transform: translateY(-1px); /* Lift the button slightly on hover */
+}
+
+
+/* save button styling end */
+
 /* Container and header-panel styling */
 #container {
     font-family: Arial, Helvetica, sans-serif;

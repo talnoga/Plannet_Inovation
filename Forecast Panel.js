@@ -24,6 +24,13 @@ var selectedForecastType;
 var exchangeTable;
 //will hold the rates table per job title of the project, based on the project rate card
 var jobTitlesRateModel;
+//Will hold the resource links information of this work item (project/task)
+var regularResourceLinkManager;
+
+var projectRemainingForecastFeesModel;
+
+var projectModel;
+
 var numOfMonths=0;
 var effortModelLoaded=false;
 var financeModelLoaded=false;
@@ -207,15 +214,15 @@ class UserRecord {
     // will get this month and year job title rate and the effort left until the end of this month and return the fees
     getRemainingForecastFeesProjectAssignmentUntilEOM(){
         let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);
-        let projAssignmentUtliEOM=this.forecastProjectAssignmentUntilEOM;
+        let projAssignmentUtliEOM=this.forecastProjectAssignmentUntilEOM*HOURS_PER_DAY;
         let retVal = projAssignmentUtliEOM*JobTitlerates.regularRate.value; 
         return retVal;
     }
 
     // will get this month and year job title rate and the effort left until the end of this month and return the fees
     getRemainingForecastFeesTaskAssignmentUntilEOM(){
-        let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);
-        let taskAssignmentUtliEOM=this.forecastTaskAssignmentUntilEOM;
+        let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);      
+        let taskAssignmentUtliEOM=this.forecastTaskAssignmentUntilEOM*HOURS_PER_DAY;
         let retVal = taskAssignmentUtliEOM*JobTitlerates.regularRate.value; 
         return retVal;
     }
@@ -228,8 +235,8 @@ class UserRecord {
             if ((record.year > startYear) || 
                 (record.year === startYear && record.month >= startMonth)) {
                 let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, record.month, record.year);   
-                let effortInHours= record[field]* HOURS_PER_DAY;
-                total += effortInHours*JobTitlerates.regularRate.value || 0;
+                let effortInDays= record[field]*HOURS_PER_DAY;
+                total += (effortInDays*JobTitlerates.regularRate.value || 0);
             }
         }
         return total;
@@ -521,12 +528,178 @@ RateModel.prototype.print = function() {
     }
 };
 
+
+//will hold the resource link structure to enable the save of the data on the link 
+class RegularResourceLink {
+    constructor(externalid, resourceExternalID, displayName) {
+        this.externalid = externalid;
+        this.resourceExternalID = resourceExternalID;
+        this.displayName = displayName;
+    }
+}
+
+//will hold all the resource links and id's
+class RegularResourceLinkManager {
+    constructor() {
+        this.links = [];
+        this.externalIDMap = new Map(); // To maintain uniqueness by externalid
+    }
+
+    addRecord(externalid, resourceExternalID, displayName) {
+        if (!this.externalIDMap.has(externalid)) {
+            const newLink = new RegularResourceLink(externalid, resourceExternalID, displayName);
+            this.links.push(newLink);
+            this.externalIDMap.set(externalid, newLink);
+        }
+    }
+
+    getExternalIDByResourceExternalID(resourceExternalID) {
+        for (let link of this.links) {
+            if (link.resourceExternalID === resourceExternalID) {
+                return link.externalid;
+            }
+        }
+        return null; // Return null if not found
+    }
+}
+
+/*=========================================== Project Forecast Model Start ==== */
+class ProjectRemainingForecastFeesModel {
+    constructor() {
+        // Internal map to store work items with unique external IDs
+        this.workItems = new Map();
+    }
+
+    // Add or update a work item
+    addOrUpdateWorkItem(externalID, workItemSysId, workItemName) {
+        if (!this.workItems.has(externalID)) {
+            this.workItems.set(externalID, new WorkItemRecord(externalID, workItemSysId, workItemName));
+        }
+        return this.workItems.get(externalID);
+    }
+
+    // Get a work item by its external ID
+    getWorkItem(externalID) {
+        return this.workItems.get(externalID);
+    }
+}
+
+class WorkItemRecord {
+    constructor(externalID, workItemSysId, workItemName) {
+        this.externalID = externalID; // Unique identifier
+        this.workItemSysId = workItemSysId;
+        this.workItemName = workItemName;
+        // Map of resource link records with unique UserExternalId
+        this.resourceLinks = new Map();
+    }
+
+    // Add or update a resource link record
+    addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId) {
+        if (!this.resourceLinks.has(userExternalId)) {
+            this.resourceLinks.set(userExternalId, new ResourceLinkRecord(resourceName, resourceExternalId));
+        }
+        return this.resourceLinks.get(userExternalId);
+    }
+
+    // Get a resource link by UserExternalId
+    getResourceLink(userExternalId) {
+        return this.resourceLinks.get(userExternalId);
+    }
+}
+
+class ResourceLinkRecord {
+    constructor(resourceName, resourceExternalId) {
+        this.resourceName = resourceName;
+        this.resourceExternalId = resourceExternalId;
+        // Array of YearMonthlyRecords
+        this.yearMonthlyRecords = [];
+    }
+
+    // Add or update a year-month record
+    addOrUpdateYearMonthlyRecord(year, month, assignmentInHours = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
+        let existingRecord = this.yearMonthlyRecords.find(record => record.year === year && record.month === month);
+
+        if (existingRecord) {
+            // Cumulatively add assignmentInHours if record exists
+            existingRecord.assignmentInHours += assignmentInHours;
+        } else {
+            // Add new record if it does not exist
+            this.yearMonthlyRecords.push(new YearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth));
+        }
+    }
+
+    // Get all year-month records
+    getYearMonthlyRecords() {
+        return this.yearMonthlyRecords;
+    }
+}
+
+class YearMonthlyRecord {
+    constructor(year = 0, month = 0, assignmentInHours = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
+        this.year = year; // Number
+        this.month = month; // Number
+        this.assignmentInHours = assignmentInHours; // Number
+        this.rate = rate; // Number
+        this.currencyExchange = currencyExchange; // Number
+        this.isCurrentMonth = isCurrentMonth; // Boolean
+    }
+}
+
+function BuildProjectRemainingForecastFeesModel(results, numOfMonths) {
+    if (!projectRemainingForecastFeesModel) {
+        projectRemainingForecastFeesModel = new ProjectRemainingForecastFeesModel();
+    }
+
+    for (let i = 0; i < results.length; i++) {
+        const record = results[i];
+
+        // Extract data from JSON record
+        const workItemId = record.WorkItem?.id || '';
+        const workItemSysId = record.WorkItem?.Project?.SYSID || '';
+        const workItemName = record.WorkItem?.Project?.Name || '';
+        const userExternalId = record.User?.id || '';
+        const resourceName = record.User?.Name || '';
+        const resourceExternalId = userExternalId; // Assuming User ID is used as ResourceExternalId
+
+        // Extract date-related information
+        const date = new Date(record.Date);
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1; // JS months are 0-based
+        const isCurrentMonth = new Date().getMonth() + 1 === month && new Date().getFullYear() === year;
+
+        // Determine assignment in hours based on laborBudget
+        const assignmentInHours = laborBudget === "Task Assignment"
+            ? record.Work?.value || 0
+            : record.ProjectAssignment?.value || 0;
+
+        // Extract additional properties if available
+        const rate = record.ProjectAssignment?.value || 0;
+        const currencyExchange = 1.0; // Assuming a default exchange rate; modify as needed
+
+        // Add or update work item in the model
+        const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
+
+        // Add or update resource link for the work item
+        const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId);
+
+        // Add or update the year-month record for the resource link
+        resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
+    }
+}
+
+
+/*=========================================== Project Forecast Model End ==== */
+
 $(function () {
     var yearsRow, tdCell, roleCell;
 
     exchangeTable = new CurrencyExchange();//will hoold the exchange rates
     
     jobTitlesRateModel = new RateModel();//will hold the rates per job title based on the project rate card
+
+    regularResourceLinkManager = new RegularResourceLinkManager();
+
+    projectRemainingForecastFeesModel = new ProjectRemainingForecastFeesModel();
     
     yearsRow = $("#years-row");
 
@@ -538,7 +711,12 @@ $(function () {
         var forecastType = document.getElementById('forecastType');
         forecastType.addEventListener('change', function(event) {
             forecastTypeSwitch(event);
-        });				
+        });			
+        
+        var saveButton = document.getElementById('saveForecastEffortBalance');
+        saveButton.addEventListener('click', function (event) {
+            saveForecastEffortBalance(event);
+        });
 
         numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
         
@@ -568,6 +746,92 @@ $(function () {
     }
 
 });
+
+// Function to be called when the button is clicked
+// Function to process API updates sequentially
+function processSequentialUpdates(updates, finalCallback) {
+    function updateNext(index) {
+        if (index >= updates.length) {
+            // All updates are processed, call finalCallback
+            finalCallback();
+            return;
+        }
+
+        const update = updates[index];
+        API.Objects.update(update.path, update.data, function () {
+            // Continue to the next update
+            updateNext(index + 1);
+        });
+    }
+
+    // Start processing from the first update
+    updateNext(0);
+}
+
+// Main function to save Forecast Effort Balance
+function saveForecastEffortBalance(event) {
+    var RemainingForecastHours, RemainingForecastFees;
+    var updates = []; // Array to store all updates
+
+    if (dataModel.size > 0) {
+        API.Utils.beginUpdate();
+
+        for (var [key, value] of dataModel) {
+            let userKey = getUserIdFromPath(value.userKey);
+            let resourceLinkID = regularResourceLinkManager.getExternalIDByResourceExternalID(userKey);
+
+            if (resourceLinkID) {
+                if (laborBudget === "Task Assignment") {
+                    RemainingForecastHours = Number(value.getForecastEffortBalanceTaskAssignment());
+                    RemainingForecastFees  = Number(value.getRemainingForecastFeesTaskAssignment());	
+                } else {
+                    RemainingForecastHours = Number(value.getForecastEffortBalanceProjectAssignment());
+                    RemainingForecastFees  = Number(value.getRemainingForecastFeesProjectAssignment());	
+                }
+
+                if (!isNaN(RemainingForecastHours) && RemainingForecastHours !== 0 && !isNaN(RemainingForecastFees) && RemainingForecastFees !== 0 ) {
+                    // Convert the value into the required string format
+                    let formattedValue = `${RemainingForecastHours * HOURS_PER_DAY}h`;
+                    let formaTtedRemainingForecastFees = RemainingForecastFees +currencyType;
+
+                    // Push the update to the updates array of Forecast Effort Balance (hours)
+                    //updates.push({
+                      //  path: `/RegularResourceLink/${resourceLinkID}`,
+                       // data: { C_ForecastEffortBalance: formattedValue }
+                    //});
+                    //update Remaining Forecast Fees with currency values 
+                    updates.push({
+                        path: `/RegularResourceLink/${resourceLinkID}`,
+                        data: { C_RemainingForecastFees: formaTtedRemainingForecastFees }
+                    });
+                }
+            }
+        }
+
+        // Process updates sequentially
+        processSequentialUpdates(updates, function () {
+            API.Utils.syncChanges();
+            API.Utils.endUpdate(); // End update transaction once all updates are done
+            API.Utils.endLoading();
+            alert('Forecast Effort Balance Saved!');
+        });
+    } else {
+        alert('No data to process!');
+    }
+}
+
+
+
+function getUserIdFromPath(path) {
+    // Check if the path contains '/User/'
+    var prefix = "/User/";
+    if (path.includes(prefix)) {
+        // Extract and return the value after '/User/'
+        return path.split(prefix)[1];
+    } else {
+        return null; // Return null if '/User/' is not found
+    }
+}
 
 //will get the selected forecast types 
 function getSelectedForecastType() {
@@ -676,7 +940,7 @@ function executeFinancialQuery(nomOfMonths){
 function buidFinancialDataModel(result, numOfMonths){
     for (let i = 0; i < result.length; i++) {
         const financeRecord = result[i];
-        let period, periodYear, periodMonth,userDisplayName,userJobTitle,userJobTitleEId,userId,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,C_MarkupRevVariance,exchangeRate;
+        let period, periodYear, periodMonth,userDisplayName,userJobTitle,userJobTitleEId,userId,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,exchangeRate;
         
         // Determine the user
         if (financeRecord.RelatedLink.LaborResource) {
@@ -693,8 +957,9 @@ function buidFinancialDataModel(result, numOfMonths){
             userJobTitle = "No Job Title";
         }
          // Try-catch blocks to safely extract values
-         try { 
-            PlannedBudget = Number(financeRecord.PlannedBudget?.value)|| 0;
+         try { //
+            //PlannedBudget = Number(financeRecord.PlannedBudget?.value)|| 0; //orignallly we were taking the budgted cost and then we have learned this is worng and we need to get the planned revenue
+            PlannedBudget = Number(financeRecord.PlannedRevenue?.value)|| 0;
         } catch (err) { PlannedBudget = 0; }  
         
           
@@ -954,6 +1219,7 @@ function iterateOnMonthsRange(isInit) {
         //change backgroupd color if falling this month
         if (isCurrentMonth(date)) {
             tdCell.css('background', '#999900');
+            tdCell.attr('title', thisMonday);
         }
 
         monthsRow.append(tdCell);
@@ -1025,11 +1291,11 @@ function QueryBuilder(caseNumber) {
         case 4: //daily forcast from this Monday until end of month from task level 
             return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
         case 5://get financials for project level aggregated
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,C_MarkupRevVariance,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
         case 6://get project level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
         case 7://get financials for Task level
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,C_MarkupRevVariance,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
         case 8://get Task level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
         default:
@@ -1082,6 +1348,8 @@ function drawData(result, numOfMonths){
 	 */	
 	var numOfDataCols = (numOfMonths*NUM_OF_DATA_COLUMNS);
 	var jobTitleExternalID;
+    var forecstUntillEOM;
+    var dataToSet,fullDataToSet;
 
     for (var [key, value] of dataModel) {
       //console.log(key + ' = ' + value);
@@ -1122,24 +1390,35 @@ function drawData(result, numOfMonths){
 		
 		//if data was found and we still runing on the months
 		if(recData && j<(numOfMonths*NUM_OF_DATA_COLUMNS )){
+            
 			//console.log("Role: " + key + ", Period: " + recKey + " For.= "+recData.forecst+", Act.= " + recData.actual);
 			//if data was found for month, if J is odd we need to take forecast, otherwise actual
 			try{
 				if (j% 2===0){
                     if(laborBudget=="Task Assignment"){
-                        dataToSet = Number(recData.taskAssignment).toFixed(2);		
+                        dataToSet        = Number(recData.taskAssignment).toFixed(2);		
+                        fullDataToSet    = Number(recData.taskAssignment).toFixed(5);
+                        forecstUntillEOM = Number(value.forecastTaskAssignmentUntilEOM).toFixed(5);
                     }else{
-                        dataToSet = Number(recData.projectAssignment).toFixed(2);		
+                        dataToSet        = Number(recData.projectAssignment).toFixed(2);	
+                        fullDataToSet    = Number(recData.projectAssignment).toFixed(5);
+                        forecstUntillEOM = Number(value.forecastProjectAssignmentUntilEOM).toFixed(5);
                     }
 					
 				}  else {
-					dataToSet = Number(recData.actualApproved).toFixed(1);					
+					dataToSet     = Number(recData.actualApproved).toFixed(1);	
+                    fullDataToSet = Number(recData.actualApproved).toFixed(5);				
 				}
 			}catch (err){
 				dataToSet = 0;
-			}				
+			}			
+            //add to the hint the total forecasted until the end of the month
+            if (isCurrentMonth(date)) {
+                rateString+="| Forecast Until EOM = " + forecstUntillEOM;
+            }
+
 			//save the period key tag on each TD cell for sum calaucltion of columns
-			cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+dataToSet+"' title='"+rateString+"'>"+dataToSet+"</td>");
+			cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+fullDataToSet+"' title='"+rateString+"'>"+dataToSet+"</td>");
 			
 			if (!(j% 2===0)){
 				cell.css('background', '#f0f5f5');
@@ -1170,9 +1449,9 @@ function drawData(result, numOfMonths){
 						case numOfDataCols+2:
                             recKey = "Forecast_Effort_Balance";
                             if(laborBudget=="Task Assignment"){
-                                dataToSet = Number(value.getForecastEffortBalanceTaskAssignment()).toFixed(1);		
+                                dataToSet = Number(value.getForecastEffortBalanceTaskAssignment()).toFixed(3);		
                             }else{
-                                dataToSet = Number(value.getForecastEffortBalanceProjectAssignment()).toFixed(1);		
+                                dataToSet = Number(value.getForecastEffortBalanceProjectAssignment()).toFixed(3);		
                             }							
 							break;						
 						default:
@@ -1428,7 +1707,33 @@ function loadJobTitlesRates(numOfMonths){
 	}   
 }
 
+//will load the resource link data model
+function loadRegularResourceLink(numOfMonths){
+    var resultQry = new Array();
+    var workItemTXT;
+    if(laborBudget=="Task Assignment"){
+        workItemTXT="/Task/"+workItemExternalID;
+    } else{
+        workItemTXT="/Project/"+workItemExternalID;
+    }
+    
+    const query = "Select externalid,Resource.externalID,Resource.DisplayName from RegularResourceLink where WorkItem='"+workItemTXT +"' limit 5000 offset ";
+   //load data with pagings 
+   queryMore(0, resultQry, parseRegularResourceLinkManager, query,numOfMonths);
+} 
 
+//will iterate on the resource assignment records and load the data model
+function parseRegularResourceLinkManager(result, numOfMonths){
+    for (let i = 0; i < result.length; i++) {
+        const linkData = result[i];
+        const externalid = linkData.externalid;
+        const resourceExternalID= linkData.Resource.externalID;
+        const displayName  = linkData.Resource.DisplayName;
+        regularResourceLinkManager.addRecord(externalid, resourceExternalID, displayName);
+    }
+    //load the job title rates
+   loadJobTitlesRates(numOfMonths); 
+}
 
 // takes the result (JSON array) and numOfMonths parameters, creates RateRecord instances, and adds them to the jobTitlesRateModel
 function parseJobTitlesRates(result, numOfMonths) {
@@ -1601,28 +1906,27 @@ function buildThisMonthForecastDataModel(result, numOfMonths) {
    // })));
    effortModelLoaded=true; //mmodel loaded, enable switch without reload
 
-   //load the job title rates
-   loadJobTitlesRates(numOfMonths); 
+   loadRegularResourceLink(numOfMonths);
    
 }
 
 //will get the number of years between the start and end dates for calcualting the last cell int he years-raw
 function getYearsBetweenDates() {
-    // Convert both dates to Date objects
+    // Validate input dates
     var startDate = new Date(fromStartDate);
     var endDate = new Date(toEndDate);
+
+    if (isNaN(startDate) || isNaN(endDate)) {
+        console.log("Invalid date input");
+        return 0;
+    }
 
     // Calculate the difference in years
     var yearsDifference = endDate.getFullYear() - startDate.getFullYear();
 
-    // Adjust for the months and days if the end date is before the anniversary of the start date in the end year
-    var monthDifference = endDate.getMonth() - startDate.getMonth();
-    if (monthDifference < 0 || (monthDifference === 0 && endDate.getDate() < startDate.getDate())) {
-        yearsDifference--;
-    }
-
     return yearsDifference;
 }
+
 
 // Helper functions
 function getDateYear(date) {
