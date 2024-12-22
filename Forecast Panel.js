@@ -13,6 +13,7 @@ var data = API.Context.getData();
 var fromStartDate = data.projectStartDate;
 var toEndDate = data.projectDueDate;
 var projExternalID=data.projExternalID;
+var leafTasksIds=formatTaskList(data.leafTasksIds);
 var laborBudget = data.laborBudget;
 var workItemExternalID = data.currentProject.ExternalID;
 var projectRateCard= data.projectRateCard;
@@ -56,7 +57,7 @@ const thisMonday = getThisMondayOrFirstWorkingDay();
 const lastDayOfThisMondayMonth = getLastDayOfThisMondayMonth(new Date(thisMonday));
 const thisYear = new Date().getFullYear();
 const thisMonth = new Date().getMonth() + 1; // Ensure month is 1-12
-
+const firstDateOfNextMonth = getFirstDateOfNextMonth();
 
 class UserRecord {
     constructor(userKey, userDisplayName, vThisMonday,userJobTitle,userJobTitleExternalID) {
@@ -528,40 +529,45 @@ RateModel.prototype.print = function() {
     }
 };
 
+/*=========================================== Regular Resource Link Model Start ==== */
 
 //will hold the resource link structure to enable the save of the data on the link 
 class RegularResourceLink {
-    constructor(externalid, resourceExternalID, displayName) {
-        this.externalid = externalid;
-        this.resourceExternalID = resourceExternalID;
-        this.displayName = displayName;
+    constructor(externalid, resourceExternalID, displayName, workItemExternalID, workItemSYSID, workItemName) {
+        this.externalid = externalid; // The resource link external ID
+        this.resourceExternalID = resourceExternalID; // Resource external ID
+        this.displayName = displayName; // Resource display name
+        this.workItemExternalID = workItemExternalID; // Work item external ID
+        this.workItemSYSID = workItemSYSID; // Work item system ID
+        this.workItemName = workItemName; // Work item name
     }
 }
 
-//will hold all the resource links and id's
+// Will hold all the resource links and IDs
 class RegularResourceLinkManager {
     constructor() {
         this.links = [];
         this.externalIDMap = new Map(); // To maintain uniqueness by externalid
     }
 
-    addRecord(externalid, resourceExternalID, displayName) {
+    addRecord(externalid, resourceExternalID, displayName, workItemExternalID, workItemSYSID, workItemName) {
         if (!this.externalIDMap.has(externalid)) {
-            const newLink = new RegularResourceLink(externalid, resourceExternalID, displayName);
+            const newLink = new RegularResourceLink(externalid, resourceExternalID, displayName, workItemExternalID, workItemSYSID, workItemName);
             this.links.push(newLink);
             this.externalIDMap.set(externalid, newLink);
         }
     }
 
-    getExternalIDByResourceExternalID(resourceExternalID) {
+    getExternalIDByResourceExternalID(resourceExternalID, workItemExternalID) {
         for (let link of this.links) {
-            if (link.resourceExternalID === resourceExternalID) {
+            if (link.resourceExternalID === resourceExternalID && link.workItemExternalID === workItemExternalID) {
                 return link.externalid;
             }
         }
         return null; // Return null if not found
     }
 }
+/*=========================================== Regular Resource Link Model End ==== */
 
 /*=========================================== Project Forecast Model Start ==== */
 class ProjectRemainingForecastFeesModel {
@@ -582,6 +588,24 @@ class ProjectRemainingForecastFeesModel {
     getWorkItem(externalID) {
         return this.workItems.get(externalID);
     }
+    // Method to update rates for all year-month records
+    updateRatesInYearMonthlyRecords() {
+        // Iterate through each work item in the project model
+        for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+            // Iterate through each resource link in the work item
+            for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                // Iterate through each year-month record in the resource link
+                for (let yearMonthlyRecord of resourceLinkRecord.yearMonthlyRecords) {
+                    // Extract year and month from the record
+                    const { year, month } = yearMonthlyRecord;
+                    // Call getRates with jobTitleExternalID, month, and year
+                    const rate = jobTitlesRateModel.getRates(resourceLinkRecord.jobTitleExternalID, month, year);
+                    // Set the rate in the YearMonthlyRecord
+                    yearMonthlyRecord.rate = rate;
+                }
+            }
+        }
+    }
 }
 
 class WorkItemRecord {
@@ -594,9 +618,9 @@ class WorkItemRecord {
     }
 
     // Add or update a resource link record
-    addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId) {
+    addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName) {
         if (!this.resourceLinks.has(userExternalId)) {
-            this.resourceLinks.set(userExternalId, new ResourceLinkRecord(resourceName, resourceExternalId));
+            this.resourceLinks.set(userExternalId, new ResourceLinkRecord(resourceName, resourceExternalId,jobTitleExternalID,jobTitleName));
         }
         return this.resourceLinks.get(userExternalId);
     }
@@ -608,9 +632,11 @@ class WorkItemRecord {
 }
 
 class ResourceLinkRecord {
-    constructor(resourceName, resourceExternalId) {
+    constructor(resourceName, resourceExternalId,jobTitleExternalID,jobTitleName) {
         this.resourceName = resourceName;
         this.resourceExternalId = resourceExternalId;
+        this.jobTitleExternalID=jobTitleExternalID;
+        this.jobTitleName=jobTitleName;
         // Array of YearMonthlyRecords
         this.yearMonthlyRecords = [];
     }
@@ -623,6 +649,7 @@ class ResourceLinkRecord {
             // Cumulatively add assignmentInHours if record exists
             existingRecord.assignmentInHours += assignmentInHours;
         } else {
+
             // Add new record if it does not exist
             this.yearMonthlyRecords.push(new YearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth));
         }
@@ -645,7 +672,11 @@ class YearMonthlyRecord {
     }
 }
 
-function BuildProjectRemainingForecastFeesModel(results, numOfMonths) {
+// this function will get the results of the monthly labor resource forecast calculated across all the project dates 
+// and the results of the labor resource forecast daily and will add the data to the model only for dates
+// that are between this monday until the end of the project 
+// to get the estimation records from this monday onwards  
+function buildProjectRemainingForecastFeesModel(results, numOfMonths) {
     if (!projectRemainingForecastFeesModel) {
         projectRemainingForecastFeesModel = new ProjectRemainingForecastFeesModel();
     }
@@ -654,13 +685,15 @@ function BuildProjectRemainingForecastFeesModel(results, numOfMonths) {
         const record = results[i];
 
         // Extract data from JSON record
-        const workItemId = record.WorkItem?.id || '';
-        const workItemSysId = record.WorkItem?.Project?.SYSID || '';
-        const workItemName = record.WorkItem?.Project?.Name || '';
-        const userExternalId = record.User?.id || '';
+        const workItemId = record.WorkITem.id || '';
+        const workItemSysId = record.WorkITem?.SYSID || '';
+        const workItemName = record.WorkITem?.Name || '';
+        const input = record.User?.id || '';
+        const userExternalId = input.replace("/User/", "");
         const resourceName = record.User?.Name || '';
         const resourceExternalId = userExternalId; // Assuming User ID is used as ResourceExternalId
-
+        const jobTitleExternalID=record.User.JobTitle.externalid;
+        const jobTitleName = record.User.JobTitle.Name;
         // Extract date-related information
         const date = new Date(record.Date);
         const year = date.getFullYear();
@@ -674,16 +707,20 @@ function BuildProjectRemainingForecastFeesModel(results, numOfMonths) {
 
         // Extract additional properties if available
         const rate = record.ProjectAssignment?.value || 0;
-        const currencyExchange = 1.0; // Assuming a default exchange rate; modify as needed
 
-        // Add or update work item in the model
-        const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
+        var currencyExchange = (currencyType === "AUD") ? 1 : 0;// Assuming a default exchange rate; modify as needed
 
-        // Add or update resource link for the work item
-        const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId);
+        //add the record only if the record date (monthly or daily) is falling between this momday and the project end date
+        if(isDateBetween(record.Date,thisMonday,toEndDate)){
+            // Add or update work item in the model
+            const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
 
-        // Add or update the year-month record for the resource link
-        resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
+            // Add or update resource link for the work item
+            const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName);
+
+            // Add or update the year-month record for the resource link
+            resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
+        }       
     }
 }
 
@@ -778,7 +815,8 @@ function saveForecastEffortBalance(event) {
 
         for (var [key, value] of dataModel) {
             let userKey = getUserIdFromPath(value.userKey);
-            let resourceLinkID = regularResourceLinkManager.getExternalIDByResourceExternalID(userKey);
+            //get resource link ID by the resource and the Work Item 
+            let resourceLinkID = regularResourceLinkManager.getExternalIDByResourceExternalID(userKey,workItemExternalID);
 
             if (resourceLinkID) {
                 if (laborBudget === "Task Assignment") {
@@ -1051,6 +1089,11 @@ function addActualBookedToDataModel(result, numOfMonths){
 function buildUserDataModel(result, numOfMonths){
     //build the data model	
    buildDataModel(result,numOfMonths);
+
+   //if project is loaded add this month data to the ProjectRemainingForecastFeesModel 
+   if(WorkItemtype === "Project"){
+     buildProjectRemainingForecastFeesModel(result, numOfMonths);
+   }  
    //call the forecast model
    executeForecastQuery(numOfMonths);
 }
@@ -1280,24 +1323,27 @@ function switchDataRowCells(dataRow, selectedForecastType) {
 
 function QueryBuilder(caseNumber) {
     var qrySql = "";
+
     const pagingSuffix = " limit 5000 offset ";
     switch (caseNumber) {
         case 1://assignment from project level
-            return "Select WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
+            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
         case 2://daily forcast from this Monday until end of month from project level 
-            return "Select WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
+            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
         case 3://assignment from task level
             return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
         case 4: //daily forcast from this Monday until end of month from task level 
             return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
         case 5://get financials for project level aggregated
             return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
-        case 6://get project level actual booed values
+        case 6://get project level actual booked values
             return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
         case 7://get financials for Task level
             return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
         case 8://get Task level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
+        case 9://get labor timephase data of project work items from the first date of next month until the proejct end date 
+            return "Select WorkITem,WorkITem.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
         default:
             return ""; // Default case to avoid errors
     }
@@ -1710,14 +1756,8 @@ function loadJobTitlesRates(numOfMonths){
 //will load the resource link data model
 function loadRegularResourceLink(numOfMonths){
     var resultQry = new Array();
-    var workItemTXT;
-    if(laborBudget=="Task Assignment"){
-        workItemTXT="/Task/"+workItemExternalID;
-    } else{
-        workItemTXT="/Project/"+workItemExternalID;
-    }
     
-    const query = "Select externalid,Resource.externalID,Resource.DisplayName from RegularResourceLink where WorkItem='"+workItemTXT +"' limit 5000 offset ";
+    const query = "Select WorkItem.externalid,WorkItem.SYSID,WorkItem.Name,externalid,Resource.externalID,Resource.DisplayName from RegularResourceLink where WorkItem in("+leafTasksIds +") limit 5000 offset ";
    //load data with pagings 
    queryMore(0, resultQry, parseRegularResourceLinkManager, query,numOfMonths);
 } 
@@ -1729,7 +1769,10 @@ function parseRegularResourceLinkManager(result, numOfMonths){
         const externalid = linkData.externalid;
         const resourceExternalID= linkData.Resource.externalID;
         const displayName  = linkData.Resource.DisplayName;
-        regularResourceLinkManager.addRecord(externalid, resourceExternalID, displayName);
+        const workItemExternalID = linkData.WorkItem.externalid; // Work item external ID
+        const workItemSYSID = linkData.WorkItem.SYSID; // Work item system ID
+        const workItemName = linkData.WorkItem.Name; // 
+        regularResourceLinkManager.addRecord(externalid, resourceExternalID, displayName,workItemExternalID,workItemSYSID,workItemName);
     }
     //load the job title rates
    loadJobTitlesRates(numOfMonths); 
@@ -1905,7 +1948,12 @@ function buildThisMonthForecastDataModel(result, numOfMonths) {
  //       forecastProjectAssignmentUntilEOM: record.forecastProjectAssignmentUntilEOM
    // })));
    effortModelLoaded=true; //mmodel loaded, enable switch without reload
-
+   
+   //if project is loaded add this month data to the ProjectRemainingForecastFeesModel 
+   if(WorkItemtype === "Project"){
+     buildProjectRemainingForecastFeesModel(result, numOfMonths);
+   }
+   //now load the regular resource link model
    loadRegularResourceLink(numOfMonths);
    
 }
@@ -2134,4 +2182,53 @@ function getNextMonthYear(thisMonday) {
     const nextYear = month === 11 ? year + 1 : year;
 
     return { year: nextYear, month: nextMonth + 1 }; // month is 1-indexed (1 = January, 12 = December)
+}
+
+// returns the ISO date string (format YYYY-MM-DD) for the first day of the next month:
+function getFirstDateOfNextMonth() {
+    const today = new Date();
+
+    // Move to the first day of the next month
+    const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+
+    // Return in ISO format (YYYY-MM-DD)
+    return nextMonth.toISOString().split('T')[0];
+}
+
+/**
+ * Function to check if a date is between thisMonday and endDate.
+ * 
+ *  */
+function isDateBetween(date, thisMonday, endDate) {
+   // Helper to normalize date to YYYY-MM-DD (removes time zones and time)
+   function normalizeDate(dateInput) {
+    const d = new Date(dateInput);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0'); // Ensure 2 digits
+    const day = String(d.getDate()).padStart(2, '0');        // Ensure 2 digits
+    return `${year}-${month}-${day}`;
+}
+
+    // Normalize all dates
+    const targetDate = normalizeDate(date);
+    const startOfWeek = normalizeDate(thisMonday);
+    const endOfRange = normalizeDate(endDate);
+
+    // Compare as plain strings (safe because they are in YYYY-MM-DD format)
+    return targetDate >= startOfWeek && targetDate <= endOfRange;
+}
+
+//will get the list of tasks id's from the panel and return it in a format thatc an be used for querying the API
+function formatTaskList(input) {
+    // Remove the last comma if it exists
+    const trimmedInput = input.endsWith(",") ? input.slice(0, -1) : input;
+
+    // Split the input into an array of IDs
+    const ids = trimmedInput.split(",");
+
+    // Map the IDs to the desired format
+    const formattedIds = ids.map(id => `'/Task/${id}'`);
+
+    // Join the formatted IDs back into a single string
+    return formattedIds.join(",");
 }
