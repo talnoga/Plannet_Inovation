@@ -601,12 +601,114 @@ class ProjectRemainingForecastFeesModel {
                     // Call getRates with jobTitleExternalID, month, and year
                     const rate = jobTitlesRateModel.getRates(resourceLinkRecord.jobTitleExternalID, month, year);
                     // Set the rate in the YearMonthlyRecord
-                    yearMonthlyRecord.rate = rate;
+                    yearMonthlyRecord.rate = rate.regularRate.value;
                 }
             }
         }
     }
+
+      // Update currency exchange for all YearMonthlyRecords
+      updateCurrencyExchanges() {
+        if (typeof exchangeTable === 'undefined' || typeof exchangeTable.getExchangeRateForCurrencyAndMonth !== 'function') {
+            console.error("Global variable 'exchangeTable' or its method 'getExchangeRateForCurrencyAndMonth' is not defined.");
+            return;
+        }
+
+        // Iterate through each work item
+        for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+            // Iterate through each resource link in the work item
+            for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                // Iterate through each year-month record in the resource link
+                for (let yearMonthlyRecord of resourceLinkRecord.yearMonthlyRecords) {
+                    // Extract year and month
+                    const { year, month } = yearMonthlyRecord;
+
+                    // Fetch the exchange rate using the global exchangeTable
+                    const exchangeRate = exchangeTable.getExchangeRateForCurrencyAndMonth(
+                        currencyType, // Assuming this is the currency type
+                        month,
+                        year
+                    );
+
+                    // Update the currency exchange in the YearMonthlyRecord
+                    yearMonthlyRecord.currencyExchange = exchangeRate;
+                }
+            }
+        }
+    }
+
+        // Update ResourceLinkExternalID for ResourceLinkRecords based on resource and work item external id's
+        updateResourceLinkExternalIDs() {
+            if (typeof regularResourceLinkManager === 'undefined' || 
+                typeof regularResourceLinkManager.getExternalIDByResourceExternalID !== 'function') {
+                console.error("Global variable 'regularResourceLinkManager' or its method 'getExternalIDByResourceExternalID' is not defined.");
+                return;
+            }
+    
+            // Iterate through each work item
+            for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+                // Iterate through each resource link in the work item
+                for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                    // Fetch the ResourceLinkExternalID
+                    const resourceLinkExternalID = regularResourceLinkManager.getExternalIDByResourceExternalID(
+                        resourceLinkRecord.resourceExternalId, workItemRecord.extractTaskID());
+    
+                    // Update the ResourceLinkRecord with the fetched ID
+                    if (resourceLinkExternalID) {
+                        resourceLinkRecord.resourceLinkExternalID = resourceLinkExternalID;
+                    } else {
+                        console.warn(`ResourceLinkExternalID not found for ResourceExternalID: ${resourceLinkRecord.resourceExternalId}, WorkItemExternalID: ${workItemRecord.externalID}`);
+                    }
+                }
+            }
+        }
+ // Save forecast effort balance method to save the model per each tasks and resource link assignment 
+    saveForecastEffortBalance() {
+        if (typeof regularResourceLinkManager === 'undefined') {
+            console.error("Global variable 'regularResourceLinkManager' is not defined.");
+            return;
+        }
+
+        const updates = [];
+
+        // Iterate through each work item
+        for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+            // Iterate through each resource link in the work item
+            for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                const resourceLinkID = resourceLinkRecord.resourceLinkExternalID;
+                const RemainingForecastHours = resourceLinkRecord.getTotalAssignmentInHours();
+                const RemainingForecastFees = resourceLinkRecord.getWeightedSumAssignment();
+
+                if (resourceLinkID && RemainingForecastHours > 0 && RemainingForecastFees > 0) {
+                    const formattedHours = `${RemainingForecastHours}h`;
+                    const formattedFees = `${RemainingForecastFees}${currencyType}`;
+
+                    updates.push({
+                        path: `/RegularResourceLink/${resourceLinkID}`,
+                        data: {
+                            C_RemainingForecastFees: formattedFees,
+                            C_ForecastEffortBalance: formattedHours
+                        }
+                    });
+                }
+            }
+        }
+
+        if (updates.length > 0) {
+            API.Utils.beginUpdate();
+
+            processSequentialUpdates(updates, () => {
+                API.Utils.syncChanges();
+                API.Utils.endUpdate();
+                setTimeout(enableButton(), 3000);
+                alert('Forecast Effort Balance Saved!');
+            });
+        } else {
+            alert('No updates to process!');
+        }
+    }
 }
+
 
 class WorkItemRecord {
     constructor(externalID, workItemSysId, workItemName) {
@@ -629,6 +731,11 @@ class WorkItemRecord {
     getResourceLink(userExternalId) {
         return this.resourceLinks.get(userExternalId);
     }
+     // Extract text after "/Task/" from externalID
+     extractTaskID() {
+        const taskPrefix = "/Task/";
+        return this.externalID.startsWith(taskPrefix) ? this.externalID.slice(taskPrefix.length) : null;
+    }
 }
 
 class ResourceLinkRecord {
@@ -637,6 +744,7 @@ class ResourceLinkRecord {
         this.resourceExternalId = resourceExternalId;
         this.jobTitleExternalID=jobTitleExternalID;
         this.jobTitleName=jobTitleName;
+        this.resourceLinkExternalID = null; // ResourceLinkExternalID will start as null and will be updated after the resourcelink model is loaded
         // Array of YearMonthlyRecords
         this.yearMonthlyRecords = [];
     }
@@ -658,6 +766,16 @@ class ResourceLinkRecord {
     // Get all year-month records
     getYearMonthlyRecords() {
         return this.yearMonthlyRecords;
+    }
+
+    // Method to calculate the sum of assignmentInHours across all year-month records
+    getTotalAssignmentInHours() {
+        return this.yearMonthlyRecords.reduce((sum, record) => sum + record.assignmentInHours, 0);
+    }
+
+    // Method to calculate the weighted sum of assignmentInHours * rate * currencyExchange across all year-month records
+    getWeightedSumAssignment() {
+        return this.yearMonthlyRecords.reduce((sum, record) => sum + (record.assignmentInHours * record.rate * record.currencyExchange), 0);
     }
 }
 
@@ -752,7 +870,7 @@ $(function () {
         
         var saveButton = document.getElementById('saveForecastEffortBalance');
         saveButton.addEventListener('click', function (event) {
-            saveForecastEffortBalance(event);
+            saveForecastModel(event);
         });
 
         numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
@@ -805,8 +923,37 @@ function processSequentialUpdates(updates, finalCallback) {
     updateNext(0);
 }
 
-// Main function to save Forecast Effort Balance
-function saveForecastEffortBalance(event) {
+// Function to enable the button
+function enableButton() {
+    const saveButton = document.getElementById('saveForecastEffortBalance');
+    saveButton.disabled = false;
+    saveButton.classList.add('btn-enabled');
+}
+
+// Function to disable the button
+function disableButton() {
+    const saveButton = document.getElementById('saveForecastEffortBalance');
+    saveButton.disabled = true;
+    saveButton.classList.remove('btn-enabled');
+}
+//main save function will call the task level save or the project level model
+function saveForecastModel(event){
+    if(WorkItemtype === "Project"){
+        if (projectRemainingForecastFeesModel) {
+            disableButton();
+            projectRemainingForecastFeesModel.saveForecastEffortBalance(); 
+        }else {
+             console.log("Cannot save - projectRemainingForecastFeesModel is not loaded or empty");
+        }
+      }else{
+        disableButton();
+        saveForecastEffortBalanceTaskLevel(event);      
+      }
+}
+
+// Main function to save Forecast Effort Balance in case the save was called from the task level
+//in case the save was selected from the project another function will be called 
+function saveForecastEffortBalanceTaskLevel(event) {
     var RemainingForecastHours, RemainingForecastFees;
     var updates = []; // Array to store all updates
 
@@ -840,7 +987,7 @@ function saveForecastEffortBalance(event) {
                     //update Remaining Forecast Fees with currency values 
                     updates.push({
                         path: `/RegularResourceLink/${resourceLinkID}`,
-                        data: { C_RemainingForecastFees: formaTtedRemainingForecastFees }
+                        data: { C_RemainingForecastFees: formaTtedRemainingForecastFees,C_ForecastEffortBalance:formattedValue }
                     });
                 }
             }
@@ -851,6 +998,7 @@ function saveForecastEffortBalance(event) {
             API.Utils.syncChanges();
             API.Utils.endUpdate(); // End update transaction once all updates are done
             API.Utils.endLoading();
+            setTimeout(enableButton(), 3000);
             alert('Forecast Effort Balance Saved!');
         });
     } else {
@@ -908,7 +1056,7 @@ function switchTotalHeaders() {
             // Make sure the index doesn't go beyond the length of the headers array
             if (index - numOfYears < headers.length) {
                 $(this).text(headers[index - numOfYears]);
-            }
+            }   
         }
     });
 }
@@ -1816,10 +1964,20 @@ function parseJobTitlesRates(result, numOfMonths) {
    // jobTitlesRateModel.print();
    // console.log("==== before finalizeRecords() End ======= ")
     // Adjust dates and handle defaults
-    jobTitlesRateModel.finalizeRecords(); 
+    jobTitlesRateModel.finalizeRecords(); //fix and sort the exchange rates array so it can support the search of rates per month 
    // jobTitlesRateModel.print();
+    
+     // Now that the model is full update the projectRemainingForecastFeesModel with all the values so the data can be saved
+    projectRemainingForecastFeesModel.updateRatesInYearMonthlyRecords();//will update the project forecast model with job titles rates
+    if (currencyType !== "AUD"){ //in case the currency is not AUD update the project forecast model with exchange rates
+        projectRemainingForecastFeesModel.updateCurrencyExchanges();
+    }
+    //now uypdate project forecast model with the resource links
+    projectRemainingForecastFeesModel.updateResourceLinkExternalIDs();
+
     // Now that the model is full, call to draw it  
     drawData(null, numOfMonths);
+    setTimeout(enableButton(), 3000);//enable the save button after load
 }
 
 

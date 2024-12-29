@@ -20,6 +20,13 @@
     transform: translateY(-1px); /* Lift the button slightly on hover */
 }
 
+.btn:disabled {
+    background-color: #ccc; /* Gray color for disabled button */
+    color: #777; /* Lighter text color */
+    cursor: not-allowed; /* Disabled cursor */
+    box-shadow: none; /* Remove shadow effect */
+    transform: none; /* Remove hover effect */
+}
 
 /* save button styling end */
 
