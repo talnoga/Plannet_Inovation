@@ -3,21 +3,31 @@
 .btn {
     background-color: #001f4d; /* Navy color */
     color: white;
-    padding: 8px 16px; /* Smaller size */
-    border: none; /* Remove border for a cleaner look */
-    border-radius: 10px; /* Subtle rounding */
-    font-size: 14px; /* Slightly smaller text */
-    font-weight: bold; /* Bold text */
+    padding: 8px 16px; /* Uniform padding for both buttons */
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: bold;
     font-family: Arial, sans-serif;
     cursor: pointer;
-    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.3); /* Shadow for button effect */
-    transition: all 0.3s ease; /* Smooth transition for hover */
+    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    display: inline-flex; /* Align content properly for icon + text */
+    align-items: center; /* Vertical alignment for icon + text */
+    height: auto; /* Allow buttons to maintain consistent height */
+    vertical-align: middle;
 }
+
 
 .btn:hover {
     background-color: #0048b6; /* Lighter blue on hover */
     box-shadow: 4px 4px 8px rgba(0, 0, 0, 0.4); /* Deeper shadow on hover */
     transform: translateY(-1px); /* Lift the button slightly on hover */
+}
+
+.btn img {
+    height: 16px; /* Adjust the icon size */
+    vertical-align: middle; /* Align icon vertically with text */
 }
 
 .btn:disabled {
@@ -139,6 +149,8 @@ tbody td {
 .roleCell {
     background: #1691ca;
     color: #ffffff;
-    font-weight: normal;
-    font-size: 11px;
+    font-weight: bold;
+    font-size: 11px;  
+    text-align: left;
+    vertical-align: top;
 }

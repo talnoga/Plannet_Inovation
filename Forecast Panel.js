@@ -16,6 +16,7 @@ var projExternalID=data.projExternalID;
 var leafTasksIds=formatTaskList(data.leafTasksIds);
 var laborBudget = data.laborBudget;
 var workItemExternalID = data.currentProject.ExternalID;
+var nameOfWorkItem=data.currentProject.name;
 var projectRateCard= data.projectRateCard;
 var currencyType= data.currentProject.RevenueCurrencyType.name;
 var WorkItemtype= data.WorkItemtype;
@@ -214,17 +215,33 @@ class UserRecord {
 
     // will get this month and year job title rate and the effort left until the end of this month and return the fees
     getRemainingForecastFeesProjectAssignmentUntilEOM(){
+        let exchangeRate=0;
+        //get currency exchange
+        if (currencyType !== "AUD") {
+            //exchangeTable.getExchangeRateForCurrencyAndMonth("USD", 12, 2021))
+            exchangeRate= exchangeTable.getExchangeRateForCurrencyAndMonth(currencyType,thisMonth,thisYear);
+        } else {
+            exchangeRate=1;
+        }
+
         let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);
         let projAssignmentUtliEOM=this.forecastProjectAssignmentUntilEOM*HOURS_PER_DAY;
-        let retVal = projAssignmentUtliEOM*JobTitlerates.regularRate.value; 
+        let retVal = projAssignmentUtliEOM*JobTitlerates.regularRate.value*exchangeRate; 
         return retVal;
     }
 
     // will get this month and year job title rate and the effort left until the end of this month and return the fees
     getRemainingForecastFeesTaskAssignmentUntilEOM(){
+        let exchangeRate=0;
+        if (currencyType !== "AUD") {
+            //exchangeTable.getExchangeRateForCurrencyAndMonth("USD", 12, 2021))
+            exchangeRate= exchangeTable.getExchangeRateForCurrencyAndMonth(currencyType,thisMonth,thisYear);
+        } else {
+            exchangeRate=1;
+        }
         let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);      
         let taskAssignmentUtliEOM=this.forecastTaskAssignmentUntilEOM*HOURS_PER_DAY;
-        let retVal = taskAssignmentUtliEOM*JobTitlerates.regularRate.value; 
+        let retVal = taskAssignmentUtliEOM*JobTitlerates.regularRate.value*exchangeRate; 
         return retVal;
     }
 
@@ -232,12 +249,21 @@ class UserRecord {
     //take the rate of the job title per month and year and add to the calculation
     calculateTotalRemainingForecastFeesFrom(field, startYear, startMonth) {
         let total = 0;
+        let exchangeRate=0;
+
         for (const record of this.monthlyRecords.values()) {
             if ((record.year > startYear) || 
                 (record.year === startYear && record.month >= startMonth)) {
+                if (currencyType !== "AUD") {
+                       //exchangeTable.getExchangeRateForCurrencyAndMonth("USD", 12, 2021))
+                        exchangeRate= exchangeTable.getExchangeRateForCurrencyAndMonth(currencyType, record.month,record.year);
+                } else {
+                        exchangeRate=1;
+                }
                 let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, record.month, record.year);   
                 let effortInDays= record[field]*HOURS_PER_DAY;
-                total += (effortInDays*JobTitlerates.regularRate.value || 0);
+
+                total += (effortInDays*JobTitlerates.regularRate.value *exchangeRate|| 0);
             }
         }
         return total;
@@ -873,6 +899,11 @@ $(function () {
             saveForecastModel(event);
         });
 
+        var downloadExcelButton = document.getElementById("downloadExcel");
+        downloadExcelButton.addEventListener('click', function (event) {
+            downloadExcel(event);
+        });
+
         numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
         
         const headers = FORECST_TOTLAS_HEADERS[selectedForecastType] || ["Unknown", "Unknown","Unknown"];
@@ -926,15 +957,21 @@ function processSequentialUpdates(updates, finalCallback) {
 // Function to enable the button
 function enableButton() {
     const saveButton = document.getElementById('saveForecastEffortBalance');
+    const downloadExcelBtn = document.getElementById('downloadExcel');    
     saveButton.disabled = false;
+    downloadExcelBtn.disabled = false;
     saveButton.classList.add('btn-enabled');
+    downloadExcelBtn.classList.add('btn-enabled');
 }
 
 // Function to disable the button
 function disableButton() {
     const saveButton = document.getElementById('saveForecastEffortBalance');
+    const downloadExcelBtn = document.getElementById('downloadExcel');    
     saveButton.disabled = true;
+    downloadExcelBtn.disabled = true;
     saveButton.classList.remove('btn-enabled');
+    downloadExcelBtn.classList.remove('btn-enabled');
 }
 //main save function will call the task level save or the project level model
 function saveForecastModel(event){
@@ -2389,4 +2426,141 @@ function formatTaskList(input) {
 
     // Join the formatted IDs back into a single string
     return formattedIds.join(",");
+}
+
+//will be used for downloading the model into excel file
+function downloadExcel() {
+    const excelData = [];
+    const columns = [
+        "Resource",
+        "Job Title",
+        "Standard Rate",
+        "Date",
+        "Month",
+        "Year",
+        "Forecast",
+        "Actual",
+        "Forecast Effort Balance (D)",
+        "Budget",
+        "Actual Booked",
+        "Exchange Rate",
+        "Currency Symbol",
+        "Remaining Forecast Fees",
+        "EAC Fees",
+        "Forecast Until EOM"
+    ];
+
+    let date = new Date(fromStartDate);
+    const endDate = new Date(toEndDate);
+
+    for (const [key, userRecord] of dataModel) {
+        const resourceName = userRecord.userDisplayName;
+        const jobTitle = userRecord.userJobTitle;
+
+        let standardRate = 0;
+
+        // Calculate totals once per resource
+        const totalActualBooked = userRecord.calculateTotal("actualBooked");
+        const remainingForecastFees = laborBudget === "Task Assignment"
+            ? userRecord.getRemainingForecastFeesTaskAssignment()
+            : userRecord.getRemainingForecastFeesProjectAssignment();
+        const eacFees = totalActualBooked + remainingForecastFees;
+
+        // Reset date for row-level processing
+        date = new Date(fromStartDate);
+
+        while (date <= endDate) {
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1;
+            const day = 1;
+            const record = userRecord.getMonthlyRecord(year, month);
+
+            let forecast = 0;
+            let actual = 0;
+            let forecastEffortBalance = 0;
+            let budget = 0;
+            let actualBooked = 0;
+            let exchangeRate = 0;
+            let currencySymbol = currencyType;
+            let forecastUntilEOM = 0; // Default to 0 for all months
+
+            // Fetch job title rates for the current month and year
+            const jobTitleRates = jobTitlesRateModel.getRates(userRecord.userJobTitleExternalID, month, year);
+            standardRate = jobTitleRates?.regularRate?.value || 0;
+
+            if (record) {
+                if (laborBudget === "Task Assignment") {
+                    forecast = record.taskAssignment || 0;
+                    forecastEffortBalance = userRecord.getForecastEffortBalanceTaskAssignment();
+                    if (isCurrentMonth(date)) {
+                        forecastUntilEOM = userRecord.forecastTaskAssignmentUntilEOM;
+                    }
+                } else {
+                    forecast = record.projectAssignment || 0;
+                    forecastEffortBalance = userRecord.getForecastEffortBalanceProjectAssignment();
+                    if (isCurrentMonth(date)) {
+                        forecastUntilEOM = userRecord.forecastProjectAssignmentUntilEOM;
+                    }
+                }
+                actual = record.actualApproved || 0;
+                budget = convertValueUsingExchangeRate(record.budget || 0, record.exchangeRate || 1);
+                actualBooked = record.actualBooked || 0;
+                exchangeRate = record.exchangeRate || 0;
+            }
+
+            // Use a proper Date object for Excel export
+            const formattedDate = new Date(year, month - 1, day);
+
+            // Add record to the excel data
+            const row = {
+                Resource: resourceName,
+                "Job Title": jobTitle,
+                "Standard Rate": standardRate,
+                Date: formattedDate,
+                Month: month,
+                Year: year,
+                Forecast: Number(forecast),
+                Actual: Number(actual),
+                "Forecast Effort Balance (D)": Number(forecastEffortBalance),
+                Budget: Number(budget),
+                "Actual Booked": Number(actualBooked),
+                "Exchange Rate": Number(exchangeRate),
+                "Currency Symbol": currencySymbol,
+                "Remaining Forecast Fees": Number(remainingForecastFees),
+                "EAC Fees": Number(eacFees),
+                "Forecast Until EOM": forecastUntilEOM // Set to a value only for the current month
+            };
+
+            // Add a comment for Forecast Until EOM if it's the current month
+            if (forecastUntilEOM > 0) {
+                row["_comment"] = `Forecast Until EOM (This Monday: ${thisMonday})`;
+            }
+
+            excelData.push(row);
+
+            date.setMonth(date.getMonth() + 1);
+        }
+    }
+
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`;
+    const fileName = `${nameOfWorkItem}_${timestamp}.xlsx`;
+
+    // Add comments to Excel cells (only for Forecast Until EOM)
+    const options = {
+        comments: excelData.map(row => row["_comment"] || null) // Ensure other rows have no comments
+    };
+
+    createExcelFile(excelData, columns, fileName, options);
+}
+
+
+function createExcelFile(data, columns, fileName) {
+    const worksheet = XLSX.utils.json_to_sheet(data, { header: columns });
+    const workbook = XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
+
+    // Generate Excel file and trigger download
+    XLSX.writeFile(workbook, fileName);
 }
