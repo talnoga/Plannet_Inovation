@@ -705,7 +705,7 @@ class ProjectRemainingForecastFeesModel {
                 const RemainingForecastHours = resourceLinkRecord.getTotalAssignmentInHours();
                 const RemainingForecastFees = resourceLinkRecord.getWeightedSumAssignment();
 
-                if (resourceLinkID && RemainingForecastHours > 0 && RemainingForecastFees > 0) {
+                if (resourceLinkID && (RemainingForecastHours >= 0 || RemainingForecastFees >= 0)) {
                     const formattedHours = `${RemainingForecastHours}h`;
                     const formattedFees = `${RemainingForecastFees}${currencyType}`;
 
@@ -1011,7 +1011,7 @@ function saveForecastEffortBalanceTaskLevel(event) {
                     RemainingForecastFees  = Number(value.getRemainingForecastFeesProjectAssignment());	
                 }
 
-                if (!isNaN(RemainingForecastHours) && RemainingForecastHours !== 0 && !isNaN(RemainingForecastFees) && RemainingForecastFees !== 0 ) {
+                if (!isNaN(RemainingForecastHours) && !isNaN(RemainingForecastFees) ) {
                     // Convert the value into the required string format
                     let formattedValue = `${RemainingForecastHours * HOURS_PER_DAY}h`;
                     let formaTtedRemainingForecastFees = RemainingForecastFees +currencyType;
