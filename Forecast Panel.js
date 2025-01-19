@@ -2465,7 +2465,15 @@ function downloadExcel() {
             ? userRecord.getRemainingForecastFeesTaskAssignment()
             : userRecord.getRemainingForecastFeesProjectAssignment();
         const eacFees = totalActualBooked + remainingForecastFees;
-
+        
+        //get forecast effort balance once per user record 
+        let forecastEffortBalance = 0;
+        if (laborBudget === "Task Assignment") {
+            forecastEffortBalance = userRecord.getForecastEffortBalanceTaskAssignment();
+        } else {
+            forecastEffortBalance = userRecord.getForecastEffortBalanceProjectAssignment();
+        }
+        
         // Reset date for row-level processing
         date = new Date(fromStartDate);
 
@@ -2477,7 +2485,7 @@ function downloadExcel() {
 
             let forecast = 0;
             let actual = 0;
-            let forecastEffortBalance = 0;
+            
             let budget = 0;
             let actualBooked = 0;
             let exchangeRate = 0;
@@ -2490,14 +2498,12 @@ function downloadExcel() {
 
             if (record) {
                 if (laborBudget === "Task Assignment") {
-                    forecast = record.taskAssignment || 0;
-                    forecastEffortBalance = userRecord.getForecastEffortBalanceTaskAssignment();
+                    forecast = record.taskAssignment || 0;                    
                     if (isCurrentMonth(date)) {
                         forecastUntilEOM = userRecord.forecastTaskAssignmentUntilEOM;
                     }
                 } else {
-                    forecast = record.projectAssignment || 0;
-                    forecastEffortBalance = userRecord.getForecastEffortBalanceProjectAssignment();
+                    forecast = record.projectAssignment || 0;                    
                     if (isCurrentMonth(date)) {
                         forecastUntilEOM = userRecord.forecastProjectAssignmentUntilEOM;
                     }
