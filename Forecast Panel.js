@@ -61,9 +61,10 @@ const thisMonth = new Date().getMonth() + 1; // Ensure month is 1-12
 const firstDateOfNextMonth = getFirstDateOfNextMonth();
 
 class UserRecord {
-    constructor(userKey, userDisplayName, vThisMonday,userJobTitle,userJobTitleExternalID) {
+    constructor(userKey, userDisplayName, vThisMonday,userJobTitle,userJobTitleExternalID,userDiscipline) {
         this.userKey = userKey; // Unique identifier for each user
         this.userDisplayName = userDisplayName;
+        this.userDiscipline=userDiscipline;
         this.userJobTitle=userJobTitle;
         this.userJobTitleExternalID= userJobTitleExternalID;
         this.monthlyRecords = new Map(); // Map to hold monthly data records
@@ -904,7 +905,7 @@ $(function () {
             downloadExcel(event);
         });
 
-        numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
+        
         
         const headers = FORECST_TOTLAS_HEADERS[selectedForecastType] || ["Unknown", "Unknown","Unknown"];
 
@@ -916,6 +917,9 @@ $(function () {
         yearsRow.append(tdCell);
         tdCell = $("<td rowspan='" + 4 + "'>"+headers[2]+"</td>");
         yearsRow.append(tdCell);
+
+        //add the years and months
+        numOfMonths = iterateOnMonthsRange(true);//first call on init, need to add the TD's as pre append
         
         
 //        if (monthNameList[datePickerStart.getMonth()] == "Jan") {
@@ -1069,34 +1073,36 @@ function switchTotalHeaders() {
     const yearsRow = $("#years-row"); // The row containing the cells
     const headers = FORECST_TOTLAS_HEADERS[selectedForecastType] || ["Unknown", "Unknown", "Unknown", "Unknown"];
 
-    // Get the number of years to calculate if we need to remove or add a cell from the end based on the selected forecast type
-    const numOfYears = getYearsBetweenDates()+1;//it's numb er of years plus the left resource cell
-
-    // Add cells based on the selected forecast type
-    // Ensure that the row has the correct number of cells (3 for Efforts, 4 for Financials)
-    const currentNumOfCells = yearsRow.children("td").length;
-
-    // If Financials is selected and we need to add a new cell
-    if (selectedForecastType === FORECAST_TYPES.FINANCIALS && currentNumOfCells < numOfYears + 4) {
-        const tdCell = $("<td rowspan='4'>" + headers[3] + "</td>");
-        yearsRow.append(tdCell);
+    // If Financials is selected, iterate through all headers (0 to 3)
+    if (selectedForecastType === FORECAST_TYPES.FINANCIALS) {
+        updateCellInYearsRow(0,headers[0]);
+        updateCellInYearsRow(1,headers[1]);
+        updateCellInYearsRow(2,headers[2]);
+        //add a new summary column
+        addCellToYearsRow(2,headers[3]);        
+    } else {
+        removeCellFromYearsRow(3);
+        updateCellInYearsRow(0,headers[0]);
+        updateCellInYearsRow(1,headers[1]);
+        updateCellInYearsRow(2,headers[2]);
     }
-    // If Efforts is selected and we need to remove the last cell
-    else if (selectedForecastType === FORECAST_TYPES.EFFORTS && currentNumOfCells > numOfYears + 3) {
-        yearsRow.children("td").last().remove();
-    }
-
-    // Update the text of existing cells starting after the numOfYears count
-    yearsRow.children("td").each(function (index) {
-        // Update only the cells starting after the numOfYears index
-        if (index >= numOfYears) {
-            // Make sure the index doesn't go beyond the length of the headers array
-            if (index - numOfYears < headers.length) {
-                $(this).text(headers[index - numOfYears]);
-            }   
-        }
-    });
 }
+
+function updateCellInYearsRow(columnNumber, newContent) {
+    const yearsRow = $("#years-row"); // The row containing the cells
+
+    // Find the target cell by column number
+    const targetCell = yearsRow.children().eq(columnNumber);
+
+    if (targetCell.length) {
+        // Update the content of the target cell
+        targetCell.html(newContent);
+    } else {
+        console.warn(`No cell found at column ${columnNumber} to update.`);
+    }
+}
+
+
 
 //will load currencies table in case the currency type is not AUD
 function loadCurrncies(numOfMonths){
@@ -1163,12 +1169,15 @@ function executeFinancialQuery(nomOfMonths){
 function buidFinancialDataModel(result, numOfMonths){
     for (let i = 0; i < result.length; i++) {
         const financeRecord = result[i];
-        let period, periodYear, periodMonth,userDisplayName,userJobTitle,userJobTitleEId,userId,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,exchangeRate;
+        let period, periodYear, periodMonth,userDisplayName,userDiscipline,userJobTitle,userJobTitleEId,userId,PlannedBudget,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,exchangeRate;
         
         // Determine the user
         if (financeRecord.RelatedLink.LaborResource) {
             userId = financeRecord.RelatedLink.LaborResource.id;
             userDisplayName = financeRecord.RelatedLink.LaborResource.DisplayName;
+            userDiscipline  = financeRecord.RelatedLink.LaborResource?.C_Discipline?.name ?? "";
+           
+
         } else {
             userId = "No User";
         } 
@@ -1203,7 +1212,7 @@ function buidFinancialDataModel(result, numOfMonths){
         
         if (!userRecord) {
             // Create a new UserRecord if it doesn't exist
-            userRecord = new UserRecord(userId,userDisplayName,null,userJobTitle,userJobTitleEId);
+            userRecord = new UserRecord(userId,userDisplayName,null,userJobTitle,userJobTitleEId,userDiscipline);
             dataModel.set(userId, userRecord);
         }
         //now add/ update the record with the financials addOrUpdateMonthlyRecordForFinancials(year, month, budget = 0, actualBooked = 0)
@@ -1229,12 +1238,13 @@ function executeActualBookedQuery(nomOfMonths){
 function addActualBookedToDataModel(result, numOfMonths){
     for (let i = 0; i < result.length; i++) {
         const timeSheetRecord = result[i];
-        let period, periodYear, periodMonth,userDisplayName,userId,C_D365PriceofItem,userJobTitle,userJobTitleEId;
+        let period, periodYear, periodMonth,userDisplayName,userDiscipline,userId,C_D365PriceofItem,userJobTitle,userJobTitleEId;
         
         // Determine the user
         if (timeSheetRecord.ReportedBy) {
             userId = timeSheetRecord.ReportedBy.id;
             userDisplayName = timeSheetRecord.ReportedBy.DisplayName;
+            userDiscipline  = timeSheetRecord.ReportedBy.C_Discipline.name;
         } else {
             userId = "No User";
         } 
@@ -1260,7 +1270,7 @@ function addActualBookedToDataModel(result, numOfMonths){
         
         if (!userRecord) {
             // Create a new UserRecord if it doesn't exist
-            userRecord = new UserRecord(userId,userDisplayName,null,userJobTitle,userJobTitleEId);
+            userRecord = new UserRecord(userId,userDisplayName,null,userJobTitle,userJobTitleEId,userDiscipline);
             dataModel.set(userId, userRecord);
         }
         //now add/ update the record with the financials addOrUpdateMonthlyRecordForFinancials(year, month, budget = 0, actualBooked = 0)
@@ -1335,6 +1345,40 @@ function updatePanelHeader(selectedForecastType) {
         }
     }
 }
+
+
+function removeCellFromYearsRow(columnNumber) {
+    const yearsRow = $("#years-row"); // The row containing the cells
+
+    // Select the cell at the specified column number
+    const cellToRemove = yearsRow.children().eq(columnNumber);
+
+    if (cellToRemove.length) {
+        // Remove the cell if it exists
+        cellToRemove.remove();
+    } else {
+        console.warn(`No cell found at column ${columnNumber} to remove.`);
+    }
+}
+
+function addCellToYearsRow(columnNumber, cellContent) {
+    const yearsRow = $("#years-row"); // The row containing the cells
+
+    // Create the new cell with the specified content
+    const newCell = $("<td rowspan='" + 4 + "'>").html(cellContent);
+
+    // Find the target column and insert the new cell after it
+    const targetCell = yearsRow.children().eq(columnNumber);
+
+    if (targetCell.length) {
+        // Insert the new cell after the target column
+        targetCell.after(newCell);
+    } else {
+        console.warn(`No cell found at column ${columnNumber} to add a new cell after.`);
+    }
+}
+
+
 
 
 //retunring formatted date function
@@ -1512,21 +1556,21 @@ function QueryBuilder(caseNumber) {
     const pagingSuffix = " limit 5000 offset ";
     switch (caseNumber) {
         case 1://assignment from project level
-            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
+            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.C_Discipline.name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
         case 2://daily forcast from this Monday until end of month from project level 
-            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
+            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
         case 3://assignment from task level
-            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
+            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
         case 4: //daily forcast from this Monday until end of month from task level 
-            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
+            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
         case 5://get financials for project level aggregated
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
         case 6://get project level actual booked values
-            return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
+            return "Select ReportedBy.DisplayName,ReportedBy.C_Discipline.name,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
         case 7://get financials for Task level
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_D365SalesPriceAUD,C_MarkupRevenue,C_D365SalesPrice,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
         case 8://get Task level actual booed values
-            return "Select ReportedBy.DisplayName,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
+            return "Select ReportedBy.DisplayName,ReportedBy.C_Discipline.name,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
         case 9://get labor timephase data of project work items from the first date of next month until the proejct end date 
             return "Select WorkITem,WorkITem.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
         default:
@@ -1553,355 +1597,199 @@ function queryMore(from, allResults, callback, qry,numOfMonths)
 
 
 //will drae the effort driven model
-function drawData(result, numOfMonths){
-    //clear table first
+function drawData(result, numOfMonths) {
+    // Clear table first
     removeTBodyRows();
-   
-    //show or hide the table based on the data
-	if(dataModel.size>0){
-		$("#data-table").show();				
-	}else {
-		$("#data-table").hide();		
-	}
-	
-	tbodyTbl = $("#data-table tbody");
-	
-	//adjust start date to begining of month 
-    var date = new Date(fromStartDate);
-	
-	/*
-	  now iterate on the model and add to the table
-	  each record represents a role and contains the role month
-	  on each record we should
-	    1. Get the user
-		2. Iterate on the data per month, fill in 0 in the missing months
-		3. Add thew record last few columns
-	 */	
-	var numOfDataCols = (numOfMonths*NUM_OF_DATA_COLUMNS);
-	var jobTitleExternalID;
-    var forecstUntillEOM;
-    var dataToSet,fullDataToSet;
 
-    for (var [key, value] of dataModel) {
-      //console.log(key + ' = ' + value);
-	  	
-	  // add the role	
-	  row = $('<tr>');
-	  cell = $("<td title='"+value.userJobTitle+"'>"+value.userDisplayName+"</td>");
-	  cell.addClass("roleCell");
-	  
-	  jobTitleExternalID=value.userJobTitleExternalID;
+    // Sort dataModel by userDiscipline and then by userDisplayName
+    const sortedData = Array.from(dataModel.values()).sort((a, b) => {
+        const disciplineCompare = a.userDiscipline.localeCompare(b.userDiscipline);
+        if (disciplineCompare !== 0) return disciplineCompare;
+        return a.userDisplayName.localeCompare(b.userDisplayName);
+    });
 
-	  row.append(cell);
-	  
-      //value.calcAllsummeries();//calcualte summaries on record before iterating on months to draw the data
-	  
-	  /*
-	    iterate on all months in range/ number of columns found		
-		*/
-	  
-	  for (var j = 0; j <((numOfMonths*NUM_OF_DATA_COLUMNS )+NUM_OF_COLUMNS_AFTER_DATA); j++) {
-		  
-		yYear   = date.getFullYear();
-		mMonth  = date.getMonth() + 1;
-		recKey = yYear+"-"+mMonth;
-
-        let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, mMonth, yYear);
-        let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
-            rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
-
-		if (j% 2===0){				
-			collType = "FOR";//will hold the key column type for totals identification
-		}  else {					
-			collType  = "ACT";
-	    }
-		
-		
-		recData = value.getMonthlyRecord(yYear,mMonth);
-		
-		//if data was found and we still runing on the months
-		if(recData && j<(numOfMonths*NUM_OF_DATA_COLUMNS )){
-            
-			//console.log("Role: " + key + ", Period: " + recKey + " For.= "+recData.forecst+", Act.= " + recData.actual);
-			//if data was found for month, if J is odd we need to take forecast, otherwise actual
-			try{
-				if (j% 2===0){
-                    if(laborBudget=="Task Assignment"){
-                        dataToSet        = Number(recData.taskAssignment).toFixed(2);		
-                        fullDataToSet    = Number(recData.taskAssignment).toFixed(5);
-                        forecstUntillEOM = Number(value.forecastTaskAssignmentUntilEOM).toFixed(5);
-                    }else{
-                        dataToSet        = Number(recData.projectAssignment).toFixed(2);	
-                        fullDataToSet    = Number(recData.projectAssignment).toFixed(5);
-                        forecstUntillEOM = Number(value.forecastProjectAssignmentUntilEOM).toFixed(5);
-                    }
-					
-				}  else {
-					dataToSet     = Number(recData.actualApproved).toFixed(1);	
-                    fullDataToSet = Number(recData.actualApproved).toFixed(5);				
-				}
-			}catch (err){
-				dataToSet = 0;
-			}			
-            //add to the hint the total forecasted until the end of the month
-            if (isCurrentMonth(date)) {
-                rateString+="| Forecast Until EOM = " + forecstUntillEOM;
-            }
-
-			//save the period key tag on each TD cell for sum calaucltion of columns
-			cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+fullDataToSet+"' title='"+rateString+"'>"+dataToSet+"</td>");
-			
-			if (!(j% 2===0)){
-				cell.css('background', '#f0f5f5');
-			}		
-			
-			if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			  cell.addClass("year-seprator");
-			}  
-			row.append(cell);
-			
-		} else {
-			
-          //check to see if we ended the data columns by months and now we are at ETC, EAC etc.
-          if(j>=(numOfMonths*NUM_OF_DATA_COLUMNS)){			  
-			   switch (j){
-						case numOfDataCols:
-                            if(laborBudget=="Task Assignment"){
-							  recKey = "taskAssignment";
-                            }else{
-                              recKey = "projectAssignment";
-                            }
-							  dataToSet = Number(value.calculateTotal(recKey)).toFixed(2);                              
-							break;
-						case numOfDataCols+1:
-							  recKey = "actualApproved";
-							  dataToSet = Number(value.calculateTotal(recKey)).toFixed(2);
-							break;
-						case numOfDataCols+2:
-                            recKey = "Forecast_Effort_Balance";
-                            if(laborBudget=="Task Assignment"){
-                                dataToSet = Number(value.getForecastEffortBalanceTaskAssignment()).toFixed(3);		
-                            }else{
-                                dataToSet = Number(value.getForecastEffortBalanceProjectAssignment()).toFixed(3);		
-                            }							
-							break;						
-						default:
-							recKey = "";
-					}                        
-			  //set precision of cost to zero, 2 for all the others		
-			  if (j== (numOfDataCols+4)){
-				numOrecision = 0;  
-			  }else{
-				numOrecision =2;
-			  }
-			   
-			  cell = $("<td periodKey='"+recKey+"' cellVal='"+dataToSet+"'>"+Number(dataToSet).formatMoney(numOrecision, ',', '.')+"</td>");  
-			  if(j==numOfDataCols){
-				  cell.addClass("year-seprator");
-			  }
-			  cell.css('background', '#ffffe6');			  
-		  } else {//no data was found just add an empty cell
-			  cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+0+"'>"+"&nbsp;"+"</td>");  
-			  if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			    cell.addClass("year-seprator");			  
-			 } 
-             //on acrual add the background 
-			  if (!(j% 2===0)){
-				cell.css('background', '#f0f5f5');
-			  }					 
-		  }			  	
-		  
-		  //if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			//  cell.addClass("year-seprator");
-			//}  
-	      row.append(cell);	
-		}	
-		//move month ahead on evry second round when J is odd
-		if(!(j% 2===0)){
-		  date.setMonth(date.getMonth() + 1);//move the month 1 ahead		  
-		}
-		
-	  }		  
-	  
-	  tbodyTbl.append(row);
-	  date = new Date(fromStartDate);//reset the date to start date
+    // Show or hide the table based on the data
+    if (dataModel.size > 0) {
+        $("#data-table").show();
+    } else {
+        $("#data-table").hide();
     }
-    //call for adding the total row
-	addTotalRow(tbodyTbl,numOfMonths);
-    API.Utils.endLoading();  
+
+    tbodyTbl = $("#data-table tbody");
+
+    // Adjust start date to beginning of the month
+    var date = new Date(fromStartDate);
+
+    // Iterate through the sorted dataModel
+    for (const value of sortedData) {
+        const row = $('<tr>');
+
+        // Add discipline
+        row.append($("<td>").addClass("roleCell").text(value.userDiscipline));
+
+        // Add user name
+        row.append($("<td>").addClass("roleCell").attr("title", value.userJobTitle).text(value.userDisplayName));
+
+        const jobTitleExternalID = value.userJobTitleExternalID;
+
+        // Work (D)
+        let recKey = laborBudget === "Task Assignment" ? "taskAssignment" : "projectAssignment";
+        let dataToSet = Number(value.calculateTotal(recKey)).toFixed(2);
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(Number(dataToSet).formatMoney(2, ',', '.')));
+
+        // Actual Regular Effort (D)
+        recKey = "actualApproved";
+        dataToSet = Number(value.calculateTotal(recKey)).toFixed(2);
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(Number(dataToSet).formatMoney(2, ',', '.')));
+
+        // Forecast Effort Balance (D)
+        recKey = "Forecast_Effort_Balance";
+        dataToSet = laborBudget === "Task Assignment" 
+            ? Number(value.getForecastEffortBalanceTaskAssignment()).toFixed(3) 
+            : Number(value.getForecastEffortBalanceProjectAssignment()).toFixed(3);
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(Number(dataToSet).formatMoney(2, ',', '.')));
+
+        // Render monthly data
+        const dateCopy = new Date(fromStartDate);
+        for (let j = 0; j < (numOfMonths * NUM_OF_DATA_COLUMNS); j++) {
+            const year = dateCopy.getFullYear();
+            const month = dateCopy.getMonth() + 1;
+            recKey = `${year}-${month}`;
+            const collType = j % 2 === 0 ? "FOR" : "ACT";
+
+            const recData = value.getMonthlyRecord(year, month);
+            if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
+                if (j % 2 === 0) {
+                    dataToSet = laborBudget === "Task Assignment" ? recData.taskAssignment : recData.projectAssignment;
+                } else {
+                    dataToSet = recData.actualApproved;
+                }
+
+                const cell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", dataToSet).text(Number(dataToSet).toFixed(2));
+                if (!(j % 2 === 0)) {
+                    cell.css('background', '#f0f5f5');
+                }
+                if (month === 1 && (j % 2 === 0)) {
+                    cell.addClass("year-seprator");
+                }
+                row.append(cell);
+            } else {
+                const emptyCell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", 0).html("&nbsp;");
+                if (month === 1 && (j % 2 === 0)) {
+                    emptyCell.addClass("year-seprator");
+                }
+                if (!(j % 2 === 0)) {
+                    emptyCell.css('background', '#f0f5f5');
+                }
+                row.append(emptyCell);
+            }
+            if (!(j % 2 === 0)) {
+                dateCopy.setMonth(dateCopy.getMonth() + 1);
+            }
+        }
+        tbodyTbl.append(row);
+    }
+
+    // Call for adding the total row
+    addTotalRow(tbodyTbl, numOfMonths);
+    API.Utils.endLoading();
 }
+
 
 //draw trhe financial model
-function drawFinancialData(numOfMonths){
-    var exchangeRateVal,titleTXT;
-    //clear table first
+function drawFinancialData(numOfMonths) {
+    // Clear table first
     removeTBodyRows();
-   
-    //show or hide the table based on the data
-	if(dataModel.size>0){
-		$("#data-table").show();				
-	}else {
-		$("#data-table").hide();		
-	}
-	
-	tbodyTbl = $("#data-table tbody");
-	
-	//adjust start date to begining of month 
-    var date = new Date(fromStartDate);
-    var jobTitleExternalID;
 
-	/*
-	  now iterate on the model and add to the table
-	  each record represents a role and contains the role month
-	  on each record we should
-	    1. Get the user
-		2. Iterate on the data per month, fill in 0 in the missing months
-		3. Add thew record last few columns
-	 */	
-	var numOfDataCols = (numOfMonths*NUM_OF_DATA_COLUMNS);
-	for (var [key, value] of dataModel) {
-      //console.log(key + ' = ' + value);
-	  // add the role	
-	  row = $('<tr>');
-	  cell = $("<td title='"+value.userJobTitle+"'>"+value.userDisplayName+"</td>");
-	  cell.addClass("roleCell");
-	  
-      let EACFees=0;
-      let RemainingForecastFees=0;
-      let ActualBookedFees=0; 
+    // Sort dataModel by userDiscipline and then by userDisplayName
+    const sortedData = Array.from(dataModel.values()).sort((a, b) => {
+        const disciplineCompare = a.userDiscipline.localeCompare(b.userDiscipline);
+        if (disciplineCompare !== 0) return disciplineCompare;
+        return a.userDisplayName.localeCompare(b.userDisplayName);
+    });
 
-      jobTitleExternalID=value.userJobTitleExternalID;
-	  
-	  row.append(cell);
-	  
-      //value.calcAllsummeries();//calcualte summaries on record before iterating on months to draw the data
-	  
-	  /*
-	    iterate on all months in range/ number of columns found		
-		*/
-	  
-	  for (var j = 0; j <((numOfMonths*NUM_OF_DATA_COLUMNS )+NUM_OF_COLUMNS_AFTER_DATA_FINANCE); j++) {
-		  
-		yYear   = date.getFullYear();
-		mMonth  = date.getMonth() + 1;
-		recKey = yYear+"-"+mMonth;
-		if (j% 2===0){				
-			collType = "BUD";//will hold the key column type for totals identification
-		}  else {					
-			collType  = "ACT";
-	    }
-		
-        //get job title rates fot the hint
-		let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, mMonth, yYear);
-        let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
-            rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
-		
-            recData = value.getMonthlyRecord(yYear,mMonth);
-		
-		//if data was found and we still runing on the months
-		if(recData && j<(numOfMonths*NUM_OF_DATA_COLUMNS )){
-			//console.log("Role: " + key + ", Period: " + recKey + " For.= "+recData.forecst+", Act.= " + recData.actual);
-			//if data was found for month, if J is odd we need to take budget, otherwise actual
-			try{
-				if(j% 2===0){                    
-                    exchangeRateVal = recData.exchangeRate;
-                    dataToSet = Number(convertValueUsingExchangeRate(recData.budget,exchangeRateVal));
-                    titleTXT = "Exchange Rate: "+Number(exchangeRateVal).toFixed(4) +", Value in AUD: "+Number(recData.budget).toFixed(2); 				
-				}  else {
-                    
-					//dataToSet = Number(recData.actualApproved).toFixed(1);
-					dataToSet = Number(recData.actualBooked);	
-                    titleTXT="";			
-				}
-			}catch (err){
-				dataToSet = 0;
-			}				
-            titleTXT+="| " + rateString;
-			//save the period key tag on each TD cell for sum calaucltion of columns
-			cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+dataToSet+"' title='"+titleTXT+"'>"+dataToSet.formatMoney(0, ',', '.')+"</td>");
-			
-			if (!(j% 2===0)){
-				cell.css('background', '#f0f5f5');
-			}		
-			
-			if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			  cell.addClass("year-seprator");
-			}  
-			row.append(cell);
-			
-		} else {
-			
-          //check to see if we ended the data columns by months and now we are at ETC, EAC etc.
-          if(j>=(numOfMonths*NUM_OF_DATA_COLUMNS)){			  
-			   switch (j){
-						case numOfDataCols:
-                            recKey = "budget";
-                            dataToSet = Number(value.calculateTotalWithExchangeRate(recKey));                              
-							break;
-						case numOfDataCols+1:
-							  recKey = "actualBooked";
-							  dataToSet = Number(value.calculateTotal(recKey));  
-                              ActualBookedFees=dataToSet; 
-							break;
-						case numOfDataCols+2:
-                              recKey = "Remaining_Forecast_Fees";
-                              if(laborBudget=="Task Assignment"){
-                                dataToSet = Number(value.getRemainingForecastFeesTaskAssignment());		
-                               }else{
-                                dataToSet = Number(value.getRemainingForecastFeesProjectAssignment());		
-                               }	
-                               RemainingForecastFees=dataToSet;											
-							break;			
-						case numOfDataCols+3:
-                              recKey = "EAC_Fees";
-                              EACFees= RemainingForecastFees+ActualBookedFees;
-							  dataToSet = Number(EACFees);  						
-							break;										
-						default:
-							recKey = "";
-					}                        
-			  //set precision of cost to zero, 2 for all the others		
-			  if (j== (numOfDataCols+4)){
-				numOrecision = 0;  
-			  }else{
-				numOrecision =2;
-			  }
-			   
-			  cell = $("<td periodKey='"+recKey+"' cellVal='"+dataToSet+"'>"+Number(dataToSet).formatMoney(numOrecision, ',', '.')+"</td>");  
-			  if(j==numOfDataCols){
-				  cell.addClass("year-seprator");
-			  }
-			  cell.css('background', '#ffffe6');			  
-		  } else {//no data was found just add an empty cell
-			  cell = $("<td periodKey='"+recKey+"-"+collType+"' cellVal='"+0+"'>"+"&nbsp;"+"</td>");  
-			  if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			    cell.addClass("year-seprator");			  
-			 } 
-             //on acrual add the background 
-			  if (!(j% 2===0)){
-				cell.css('background', '#f0f5f5');
-			  }					 
-		  }			  	
-		  
-		  //if (mMonth==1 && (j% 2===0)){//on Jan add the year seprator
-			//  cell.addClass("year-seprator");
-			//}  
-	      row.append(cell);	
-		}	
-		//move month ahead on evry second round when J is odd
-		if(!(j% 2===0)){
-		  date.setMonth(date.getMonth() + 1);//move the month 1 ahead		  
-		}
-		
-	  }		  
-	  
-	  tbodyTbl.append(row);
-	  date = new Date(fromStartDate);//reset the date to start date
+    // Show or hide the table based on the data
+    if (dataModel.size > 0) {
+        $("#data-table").show();
+    } else {
+        $("#data-table").hide();
     }
-    //call for adding the total row
-	addTotalRow(tbodyTbl,numOfMonths);
-    API.Utils.endLoading();  
+
+    tbodyTbl = $("#data-table tbody");
+    const date = new Date(fromStartDate);
+
+    for (const value of sortedData) {
+        const row = $('<tr>');
+
+        // Add discipline
+        row.append($("<td>").addClass("roleCell").text(value.userDiscipline));
+
+        // Add user name
+        row.append($("<td>").addClass("roleCell").attr("title", value.userJobTitle).text(value.userDisplayName));
+
+        // Budget
+        let recKey = "budget";
+        let dataToSet = Number(value.calculateTotalWithExchangeRate(recKey));
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(dataToSet.formatMoney(2, ',', '.')));
+
+        // Actual Booked
+        recKey = "actualBooked";
+        dataToSet = Number(value.calculateTotal(recKey));
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(dataToSet.formatMoney(2, ',', '.')));
+
+        // Remaining Forecast Fees
+        recKey = "Remaining_Forecast_Fees";
+        dataToSet = laborBudget === "Task Assignment"
+            ? value.getRemainingForecastFeesTaskAssignment()
+            : value.getRemainingForecastFeesProjectAssignment();
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", dataToSet).text(dataToSet.formatMoney(2, ',', '.')));
+
+        // EAC Fees
+        recKey = "EAC_Fees";
+        const eacFees = dataToSet + Number(value.calculateTotal("actualBooked"));
+        row.append($("<td>").css('background', '#ffffe6').attr("periodKey", recKey).attr("cellVal", eacFees).text(eacFees.formatMoney(2, ',', '.')));
+
+        // Render monthly data
+        const dateCopy = new Date(fromStartDate);
+        for (let j = 0; j < (numOfMonths * NUM_OF_DATA_COLUMNS); j++) {
+            const year = dateCopy.getFullYear();
+            const month = dateCopy.getMonth() + 1;
+            recKey = `${year}-${month}`;
+            const collType = j % 2 === 0 ? "BUD" : "ACT";
+
+            const recData = value.getMonthlyRecord(year, month);
+            if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
+                dataToSet = j % 2 === 0 ? recData.budget : recData.actualBooked;
+                const cell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", dataToSet).text(dataToSet.formatMoney(0, ',', '.'));
+                if (!(j % 2 === 0)) {
+                    cell.css('background', '#f0f5f5');
+                }
+                if (month === 1 && (j % 2 === 0)) {
+                    cell.addClass("year-seprator");
+                }
+                row.append(cell);
+            } else {
+                const emptyCell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", 0).html("&nbsp;");
+                if (month === 1 && (j % 2 === 0)) {
+                    emptyCell.addClass("year-seprator");
+                }
+                if (!(j % 2 === 0)) {
+                    emptyCell.css('background', '#f0f5f5');
+                }
+                row.append(emptyCell);
+            }
+            if (!(j % 2 === 0)) {
+                dateCopy.setMonth(dateCopy.getMonth() + 1);
+            }
+        }
+        tbodyTbl.append(row);
+    }
+
+    // Add totals row
+    addTotalRow(tbodyTbl, numOfMonths);
+    API.Utils.endLoading();
 }
+
 
 //safe convert exchange 
 function convertValueUsingExchangeRate(value, exchangeRate) {
@@ -2023,12 +1911,14 @@ function buildDataModel(result, numOfMonths) {
     // Iterate over each record in the results to build the data model
     for (let i = 0; i < result.length; i++) {
         const capacityRecord = result[i];
-        let period, forecast,taskAssignment, actualApproved, actualPending, periodYear, periodMonth, userDisplayName, userId,userJobTitle,userJobTitleEId;
+        let period, forecast,taskAssignment, actualApproved, actualPending, periodYear, periodMonth, userDisplayName,userDiscipline, userId,userJobTitle,userJobTitleEId;
         
         // Determine the user
         if (capacityRecord.User) {
             userId = capacityRecord.User.id;
             userDisplayName = capacityRecord.User.DisplayName;
+            userDiscipline = capacityRecord.User?.C_Discipline?.name ?? "";
+
         } else {
             userId = "No User";
         }
@@ -2071,7 +1961,7 @@ function buildDataModel(result, numOfMonths) {
         
         if (!userRecord) {
             // Create a new UserRecord if it doesn't exist
-            userRecord = new UserRecord(userId,userDisplayName,thisMonday,userJobTitle,userJobTitleEId);
+            userRecord = new UserRecord(userId,userDisplayName,thisMonday,userJobTitle,userJobTitleEId,userDiscipline);
             dataModel.set(userId, userRecord);
         }
         
@@ -2095,12 +1985,14 @@ function buildThisMonthForecastDataModel(result, numOfMonths) {
     // Iterate over each record in the results to build this month's forecast data model
     for (let i = 0; i < result.length; i++) {
         const capacityRecord = result[i];
-        let forecast, taskAssignment, userDisplayName, userId, userJobTitle,userJobTitleEId;
+        let forecast, taskAssignment, userDisplayName,userDiscipline, userId, userJobTitle,userJobTitleEId;
         
         // Determine the user
         if (capacityRecord.User) {
             userId = capacityRecord.User.id;
             userDisplayName = capacityRecord.User.DisplayName;
+            userDiscipline  = capacityRecord.User?.C_Discipline?.name ?? "";
+
         } else {
             userId = "No User";
         }
@@ -2127,7 +2019,7 @@ function buildThisMonthForecastDataModel(result, numOfMonths) {
         
         if (!userRecord) {
             // Create a new UserRecord if it doesn't exist
-            userRecord = new UserRecord(userId, userDisplayName, thisMonday,userJobTitle,userJobTitleEId);
+            userRecord = new UserRecord(userId, userDisplayName, thisMonday,userJobTitle,userJobTitleEId,userDiscipline);
             dataModel.set(userId, userRecord);
         }
 
@@ -2202,11 +2094,66 @@ function addTotalRow(tbodyTbl,numOfMonths){
 	
 	//first creat the Total cell 
 	 row = $('<tr>');
-	 cell = $("<td>Total</td>");
+	 cell = $("<td colspan='2'>Total</td>");
 	 row.append(cell);
 	 cell.addClass("summaryTotalCell");
+
+     // add the summary totals 
+
+    if(selectedForecastType === FORECAST_TYPES.FINANCIALS){
+        recKey ="budget";
+        totVal = calculateColumnSummary(recKey);
+        cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
+        cell.addClass("summaryTotalCell");
+        row.append(cell);	
+
+        recKey ="actualBooked"; 
+        totVal = calculateColumnSummary(recKey);
+        cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
+        cell.addClass("summaryTotalCell");
+        row.append(cell);	
+
+        recKey ="Remaining_Forecast_Fees";
+        totVal = calculateColumnSummary(recKey);
+        cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
+        cell.addClass("summaryTotalCell");
+        row.append(cell);	
+
+        recKey = "EAC_Fees"
+        totVal = calculateColumnSummary(recKey);
+        cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
+        cell.addClass("summaryTotalCell");
+        row.append(cell);
+
+    }else{
+
+        if(laborBudget=="Task Assignment"){
+            recKey = "taskAssignment";
+          }else{
+            recKey = "projectAssignment";
+          }			
+          totVal = calculateColumnSummary(recKey);
+          cell = $("<td>"+ totVal.toFixed(1) +"</td>");
+          cell.addClass("summaryTotalCell");
+          row.append(cell);	  
+
+          recKey = "actualApproved";
+          totVal = calculateColumnSummary(recKey);
+          cell = $("<td>"+ totVal.toFixed(1) +"</td>");
+          cell.addClass("summaryTotalCell");
+          row.append(cell);	
+
+
+          recKey = "Forecast_Effort_Balance";
+          totVal = calculateColumnSummary(recKey);
+          cell = $("<td>"+ totVal.toFixed(1) +"</td>");
+          cell.addClass("summaryTotalCell");
+          row.append(cell);
+
+    }
+
 	
-	for (var j = 0; j <((numOfMonths*NUM_OF_DATA_COLUMNS )+(selectedForecastType === FORECAST_TYPES.FINANCIALS ? NUM_OF_COLUMNS_AFTER_DATA_FINANCE : NUM_OF_COLUMNS_AFTER_DATA)); j++) {		  
+	for (var j = 0; j <(numOfMonths*NUM_OF_DATA_COLUMNS);j++) {		  
 		yYear   = date.getFullYear();
 		mMonth  = date.getMonth() + 1;
 		recKey = yYear+"-"+mMonth;
@@ -2223,54 +2170,14 @@ function addTotalRow(tbodyTbl,numOfMonths){
 		
 		columnKey = recKey + "-"+ collType;
 		
-		if(j<(numOfMonths*NUM_OF_DATA_COLUMNS )){
-			totVal = calculateColumnSummary(columnKey);
-		}else {
-            switch (j){
-                case numOfDataCols:
-                    if (selectedForecastType === FORECAST_TYPES.FINANCIALS){
-                        recKey ="budget";
-                    }else {
-                        if(laborBudget=="Task Assignment"){
-                          recKey = "taskAssignment";
-                        }else{
-                          recKey = "projectAssignment";
-                        }								
-                    }							  
-                    break;
-                case numOfDataCols+1:
-                    if (selectedForecastType === FORECAST_TYPES.FINANCIALS){
-                        recKey ="actualBooked";
-                    }else {
-                        recKey = "actualApproved";
-                    }	
-                    break;
-                case numOfDataCols+2:
-                    if (selectedForecastType === FORECAST_TYPES.FINANCIALS){
-                        recKey ="Remaining_Forecast_Fees";
-                    }else {
-                        recKey = "Forecast_Effort_Balance";
-                    }
-                    break;
-                case numOfDataCols+3:
-                    recKey = "EAC_Fees";
-                    break;						
-                default:
-                    recKey = "";
-            }
-			totVal = calculateColumnSummary(recKey);	
-		}
+		totVal = calculateColumnSummary(columnKey);
+
+        if (selectedForecastType === FORECAST_TYPES.FINANCIALS){
+            cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
+        }else {
+            cell = $("<td>"+ totVal.toFixed(1) +"</td>");  
+        }	
 		
-		//in case of cost format money, otherwise number
-		if (j==numOfDataCols+4){
-		  cell = $("<td>"+ Number(totVal).formatMoney(0, ',', '.') +"</td>");  
-		}else {
-            if (selectedForecastType === FORECAST_TYPES.FINANCIALS){
-                cell = $("<td>"+ totVal.formatMoney(0, ',', '.')  +"</td>");  
-            }else {
-                cell = $("<td>"+ totVal.toFixed(1) +"</td>");  
-            }		  
-		}			
 		cell.addClass("summaryTotalCell");
 		if ((mMonth==1 && (j% 2===0)) || (j==numOfDataCols)){//on Jan and on ETC add the year seprator
 			  cell.addClass("year-seprator");
