@@ -1,1 +1,49 @@
+<div id="container">
+    <div id="header-panel" class="header-panel clear">
+        <label for="forecastType" class="header-label">Forecast Type:</label>
+        <select id="forecastType">
+            <option value="efforts">Efforts (days)</option>
+            <option value="financials">Financials</option>
+        </select>
 
+        &nbsp; &nbsp; &nbsp;
+
+        <span class="header-label labour-budget">
+            Labour Budget: <span id="labourBudget">{catch(toString($LaborBudget),"")}</span>
+        </span>
+        &nbsp; &nbsp; &nbsp;
+
+        <span class="header-label labour-budget">
+            Currency Type: <span id="labourBudget">{catch(toString($RevenueCurrencyType),"")}</span>
+        </span>
+        &nbsp; &nbsp; &nbsp;
+        <button id="saveForecastEffortBalance" class="btn" disabled>Save Remaining Forecast</button>
+        &nbsp; &nbsp; &nbsp;        
+        <button id="downloadExcel" class="btn" disabled>
+            <img src="https://img.icons8.com/ios-filled/20/ffffff/ms-excel.png" alt="Excel Icon" style="vertical-align: middle; margin-right: 5px;">
+            Download Excel
+        </button>
+    </div>   
+    <div style="text-align:center;">
+        <h2 style="color:#000033;font-size: 14px; font-family:'Arial Black', Gadget, sans-serif" id="panel-header">
+            Forecast per Resource by Effort (Days)
+        </h2>
+    </div>	
+    <div class="table-panel" id="table-panel">
+        <table id="data-table">
+            <thead>
+                <tr id="header-row">
+                    <td rowspan="4"">Discipline</td>      
+                    <td rowspan="4" class="year-right-seprator" id="resourceCell">Resource</td>                      	        			  
+                </tr>
+                <tr id="years-row"></tr>
+                <tr id="months-row"></tr>
+                <tr id="data-header-row"></tr>
+            </thead>       
+            <tbody id="dashTable">
+                <tr></tr>
+            </tbody>
+        </table>
+    </div>        
+   
+</div>
