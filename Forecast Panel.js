@@ -706,7 +706,7 @@ class ProjectRemainingForecastFeesModel {
                 const RemainingForecastHours = resourceLinkRecord.getTotalAssignmentInHours();
                 const RemainingForecastFees = resourceLinkRecord.getWeightedSumAssignment();
 
-                if (resourceLinkID && (RemainingForecastHours >= 0 || RemainingForecastFees >= 0)) {
+                if (resourceLinkID && !isNaN(RemainingForecastHours) && !isNaN(RemainingForecastFees)) {
                     const formattedHours = `${RemainingForecastHours}h`;
                     const formattedFees = `${RemainingForecastFees}${currencyType}`;
 
@@ -962,10 +962,13 @@ function processSequentialUpdates(updates, finalCallback) {
 function enableButton() {
     const saveButton = document.getElementById('saveForecastEffortBalance');
     const downloadExcelBtn = document.getElementById('downloadExcel');    
-    saveButton.disabled = false;
     downloadExcelBtn.disabled = false;
-    saveButton.classList.add('btn-enabled');
     downloadExcelBtn.classList.add('btn-enabled');
+    if (laborBudget === "Task Assignment") { 
+      saveButton.disabled = false;  
+      saveButton.classList.add('btn-enabled');
+    }
+  
 }
 
 // Function to disable the button
@@ -1490,7 +1493,7 @@ function iterateOnMonthsRange(isInit) {
 
         //change backgroupd color if falling this month
         if (isCurrentMonth(date)) {
-            tdCell.css('background', '#999900');
+            tdCell.css('background', '#eb94c2');
             tdCell.attr('title', thisMonday);
         }
 
