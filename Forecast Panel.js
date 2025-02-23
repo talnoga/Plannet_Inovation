@@ -845,10 +845,12 @@ function buildProjectRemainingForecastFeesModel(results, numOfMonths) {
         const month = date.getMonth() + 1; // JS months are 0-based
         const isCurrentMonth = new Date().getMonth() + 1 === month && new Date().getFullYear() === year;
 
-        // Determine assignment in hours based on laborBudget
-        const assignmentInHours = laborBudget === "Task Assignment"
-            ? record.Work?.value || 0
-            : record.ProjectAssignment?.value || 0;
+        // Determine assignment in hours based on laborBudget, if the date is in the oast set the value to zero
+        const assignmentInHours = isDateBetween(record.Date, thisMonday, toEndDate)
+             ? (laborBudget === "Task Assignment"
+                ? record.Work?.value || 0
+                : record.ProjectAssignment?.value || 0)
+              : 0;
 
         // Extract additional properties if available
         const rate = record.ProjectAssignment?.value || 0;
@@ -856,16 +858,16 @@ function buildProjectRemainingForecastFeesModel(results, numOfMonths) {
         var currencyExchange = (currencyType === "AUD") ? 1 : 0;// Assuming a default exchange rate; modify as needed
 
         //add the record only if the record date (monthly or daily) is falling between this momday and the project end date
-        if(isDateBetween(record.Date,thisMonday,toEndDate)){
+        //if(isDateBetween(record.Date,thisMonday,toEndDate)){
             // Add or update work item in the model
-            const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
+        const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
 
             // Add or update resource link for the work item
-            const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName);
+        const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName);
 
             // Add or update the year-month record for the resource link
-            resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
-        }       
+        resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
+        //}       
     }
 }
 
@@ -1601,6 +1603,8 @@ function queryMore(from, allResults, callback, qry,numOfMonths)
 
 //will drae the effort driven model
 function drawData(result, numOfMonths) {
+    var forecstUntillEOM;
+
     // Clear table first
     removeTBodyRows();
 
@@ -1633,7 +1637,7 @@ function drawData(result, numOfMonths) {
         // Add user name
         row.append($("<td>").addClass("roleCell").attr("title", value.userJobTitle).text(value.userDisplayName));
 
-        const jobTitleExternalID = value.userJobTitleExternalID;
+        let jobTitleExternalID = value.userJobTitleExternalID;
 
         // Work (D)
         let recKey = laborBudget === "Task Assignment" ? "taskAssignment" : "projectAssignment";
@@ -1659,16 +1663,32 @@ function drawData(result, numOfMonths) {
             const month = dateCopy.getMonth() + 1;
             recKey = `${year}-${month}`;
             const collType = j % 2 === 0 ? "FOR" : "ACT";
+            let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, month, year);
+            let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
+                rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
 
             const recData = value.getMonthlyRecord(year, month);
             if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
                 if (j % 2 === 0) {
                     dataToSet = laborBudget === "Task Assignment" ? recData.taskAssignment : recData.projectAssignment;
+                    forecstUntillEOM = Number(laborBudget === "Task Assignment" 
+                        ? value.forecastTaskAssignmentUntilEOM 
+                        : value.forecastProjectAssignmentUntilEOM).toFixed(5);
+                    
                 } else {
                     dataToSet = recData.actualApproved;
                 }
+                //add to the hint the total forecasted until the end of the month
+                if (isCurrentMonth(dateCopy)) {
+                    rateString+="| Forecast Until EOM = " + forecstUntillEOM;
+                    }
+    
+                const cell = $("<td>")
+                    .attr("periodKey", `${recKey}-${collType}`)
+                    .attr("cellVal", dataToSet)
+                    .attr("title", rateString) // Add title attribute with rateString
+                    .text(Number(dataToSet).toFixed(2));
 
-                const cell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", dataToSet).text(Number(dataToSet).toFixed(2));
                 if (!(j % 2 === 0)) {
                     cell.css('background', '#f0f5f5');
                 }
@@ -1701,6 +1721,8 @@ function drawData(result, numOfMonths) {
 
 //draw trhe financial model
 function drawFinancialData(numOfMonths) {
+    var exchangeRateVal,titleTXT;
+    var jobTitleExternalID;
     // Clear table first
     removeTBodyRows();
 
@@ -1723,6 +1745,7 @@ function drawFinancialData(numOfMonths) {
 
     for (const value of sortedData) {
         const row = $('<tr>');
+        jobTitleExternalID=value.userJobTitleExternalID;
 
         // Add discipline
         row.append($("<td>").addClass("roleCell").text(value.userDiscipline));
@@ -1759,11 +1782,31 @@ function drawFinancialData(numOfMonths) {
             const month = dateCopy.getMonth() + 1;
             recKey = `${year}-${month}`;
             const collType = j % 2 === 0 ? "BUD" : "ACT";
+            //get job title rates fot the hint
+            let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, month, year);
+            let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
+                rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
 
             const recData = value.getMonthlyRecord(year, month);
             if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
                 dataToSet = j % 2 === 0 ? recData.budget : recData.actualBooked;
-                const cell = $("<td>").attr("periodKey", `${recKey}-${collType}`).attr("cellVal", dataToSet).text(dataToSet.formatMoney(0, ',', '.'));
+                try{
+                    if(j% 2===0){                    
+                    exchangeRateVal = recData.exchangeRate;                    
+                    titleTXT = "Exchange Rate: "+Number(exchangeRateVal).toFixed(4) +", Value in AUD: "+Number(recData.budget).toFixed(2); 				
+                    }  else {                          
+                    titleTXT="";			
+                    }
+                    }catch (err){
+                        titleTXT="";	
+                    }	
+                    titleTXT+="| " + rateString;			
+                    const cell = $("<td>")
+                    .attr("periodKey", `${recKey}-${collType}`)
+                    .attr("cellVal", dataToSet)
+                    .attr("title", titleTXT)  // Add title attribute for tooltip
+                    .text(dataToSet.formatMoney(0, ',', '.'));
+
                 if (!(j % 2 === 0)) {
                     cell.css('background', '#f0f5f5');
                 }
