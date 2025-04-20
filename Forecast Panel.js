@@ -1249,7 +1249,7 @@ function addActualBookedToDataModel(result, numOfMonths){
         if (timeSheetRecord.ReportedBy) {
             userId = timeSheetRecord.ReportedBy.id;
             userDisplayName = timeSheetRecord.ReportedBy.DisplayName;
-            userDiscipline  = timeSheetRecord.ReportedBy.C_Discipline.name;
+            userDiscipline  = timeSheetRecord.ReportedBy?.C_Discipline?.name||"";
         } else {
             userId = "No User";
         } 
@@ -1561,13 +1561,13 @@ function QueryBuilder(caseNumber) {
     const pagingSuffix = " limit 5000 offset ";
     switch (caseNumber) {
         case 1://assignment from project level
-            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.C_Discipline.name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
+            return "Select WorkITem,WorkITem.EntityType,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.C_Discipline.name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
         case 2://daily forcast from this Monday until end of month from project level 
-            return "Select WorkITem,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
+            return "Select WorkITem,WorkITem.EntityType,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
         case 3://assignment from task level
-            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
+            return "Select WorkITem.Name,WorkITem.EntityType,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
         case 4: //daily forcast from this Monday until end of month from task level 
-            return "Select WorkITem.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
+            return "Select WorkITem.Name,WorkITem.EntityType,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
         case 5://get financials for project level aggregated
             return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_MarkupRevenue,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
         case 6://get project level actual booked values
@@ -1577,7 +1577,7 @@ function QueryBuilder(caseNumber) {
         case 8://get Task level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.C_Discipline.name,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
         case 9://get labor timephase data of project work items from the first date of next month until the proejct end date 
-            return "Select WorkITem,WorkITem.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
+            return "Select WorkITem,WorkITem.EntityType,WorkITem.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
         default:
             return ""; // Default case to avoid errors
     }
@@ -1958,7 +1958,10 @@ function buildDataModel(result, numOfMonths) {
     for (let i = 0; i < result.length; i++) {
         const capacityRecord = result[i];
         let period, forecast,taskAssignment, actualApproved, actualPending, periodYear, periodMonth, userDisplayName,userDiscipline, userId,userJobTitle,userJobTitleEId;
-        
+        let workItemType;
+
+        workItemType = capacityRecord.WorkITem.EntityType;//will hold the work item type
+
         // Determine the user
         if (capacityRecord.User) {
             userId = capacityRecord.User.id;
@@ -2011,10 +2014,12 @@ function buildDataModel(result, numOfMonths) {
             dataModel.set(userId, userRecord);
         }
         
-        if(laborBudget=="Task Assignment"){
+        if(laborBudget=="Task Assignment"){ //#### Changed by Tal - 16/03/2025 
             //addOrUpdateMonthlyRecord(year, month, projectAssignment = 0, taskAssignment = 0, actualApproved = 0) 
              // Update the user's monthly record with the new data
-           userRecord.addOrUpdateMonthlyRecord(periodYear, periodMonth,forecast, taskAssignment, actualApproved + actualPending);
+             if( workItemType=="Task"){
+                userRecord.addOrUpdateMonthlyRecord(periodYear, periodMonth,forecast, taskAssignment, actualApproved + actualPending);
+             }           
         } else{
             // Update the user's monthly record with the new data
             userRecord.addOrUpdateMonthlyRecord(periodYear, periodMonth, forecast,taskAssignment, actualApproved + actualPending);
@@ -2385,6 +2390,7 @@ function formatTaskList(input) {
 function downloadExcel() {
     const excelData = [];
     const columns = [
+        "Discipline",
         "Resource",
         "Job Title",
         "Standard Rate",
@@ -2407,6 +2413,7 @@ function downloadExcel() {
     const endDate = new Date(toEndDate);
 
     for (const [key, userRecord] of dataModel) {
+        const discipline = userRecord.userDiscipline;
         const resourceName = userRecord.userDisplayName;
         const jobTitle = userRecord.userJobTitle;
 
@@ -2472,6 +2479,7 @@ function downloadExcel() {
 
             // Add record to the excel data
             const row = {
+                Discipline:discipline,
                 Resource: resourceName,
                 "Job Title": jobTitle,
                 "Standard Rate": standardRate,
