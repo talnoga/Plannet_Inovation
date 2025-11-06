@@ -1,0 +1,13 @@
+{
+  "currentProject": {{JsonObject(CurrentObject(),"SYSID,ExternalID,LaborBudget,RevenueCurrencyType.name,RateCard.ExternalID,name")},
+  "auto-refresh" : {{$BudgetCostLR},
+  "projectStartDate":{{dateStart},
+  "projectDueDate":{{DateEnd},
+  "laborBudget":{{LaborBudget},
+  "hoursPerDay":{{hoursPerDay},
+  "WorkItemtype":{{WorkItemtype},
+  "projExternalID":{{projExternalID},
+  "projectRateCard":{{projectRateCard},
+  "leafTasksIds":{{leafTaskasList}
+  
+}

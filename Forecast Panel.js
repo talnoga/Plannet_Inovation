@@ -33,6 +33,13 @@ var projectRemainingForecastFeesModel;
 
 var projectModel;
 
+// counter to track how many times the project-level model builder ran (for debug output)
+var projectRemainingForecastBuildCount = 0;
+// guard so we print the sample only once after rates are applied
+var projectRemainingForecastPrinted = false;
+// guard so we print the task sample only once when in Task view
+var projectRemainingForecastPrintedTask = false;
+
 var numOfMonths=0;
 var effortModelLoaded=false;
 var financeModelLoaded=false;
@@ -242,6 +249,9 @@ class UserRecord {
         }
         let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, thisMonth, thisYear);      
         let taskAssignmentUtliEOM=this.forecastTaskAssignmentUntilEOM*HOURS_PER_DAY;
+        if(JobTitlerates.regularRate.currency!=="AUD"){//rate is already in a diffrent currency
+            exchangeRate=1;
+        } 
         let retVal = taskAssignmentUtliEOM*JobTitlerates.regularRate.value*exchangeRate; 
         return retVal;
     }
@@ -262,6 +272,9 @@ class UserRecord {
                         exchangeRate=1;
                 }
                 let JobTitlerates = jobTitlesRateModel.getRates(this.userJobTitleExternalID, record.month, record.year);   
+                if(JobTitlerates.regularRate.currency!=="AUD"){//rate is already in a diffrent currency
+                    exchangeRate=1;
+                } 
                 let effortInDays= record[field]*HOURS_PER_DAY;
 
                 total += (effortInDays*JobTitlerates.regularRate.value *exchangeRate|| 0);
@@ -628,9 +641,67 @@ class ProjectRemainingForecastFeesModel {
                     // Call getRates with jobTitleExternalID, month, and year
                     const rate = jobTitlesRateModel.getRates(resourceLinkRecord.jobTitleExternalID, month, year);
                     // Set the rate in the YearMonthlyRecord
-                    yearMonthlyRecord.rate = rate.regularRate.value;
+                    yearMonthlyRecord.rate = {
+                        regularRate: {
+                            value: rate.regularRate.value,
+                            currency: rate.regularRate.currency
+                        },
+                        overtimeRate: {
+                            value: rate.overtimeRate.value,
+                            currency: rate.overtimeRate.currency
+                        }
+                    };
+
                 }
             }
+        }
+    }
+
+    // Overwrite current-month assignmentInDays from the UI dataModel's forecast values
+    syncThisMonthFromDataModel() {
+        try {
+            for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+                for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                    // Try several user key formats to locate the authoritative UserRecord in dataModel
+                    const candidates = [];
+                    if (resourceLinkRecord.resourceExternalId) {
+                        candidates.push('/User/' + resourceLinkRecord.resourceExternalId);
+                        candidates.push(resourceLinkRecord.resourceExternalId);
+                        // sometimes the id may already include the prefix
+                        if (resourceLinkRecord.resourceExternalId.indexOf('/User/') === 0) {
+                            candidates.push(resourceLinkRecord.resourceExternalId);
+                        }
+                    }
+
+                    let userRecord = null;
+                    for (const c of candidates) {
+                        if (!c) continue;
+                        const ur = dataModel.get(c);
+                        if (ur) { userRecord = ur; break; }
+                    }
+
+                    if (!userRecord) {
+                        // Not found — log for debugging so we can identify mismatched keys
+                        // Keep silent in normal runs, but warn in debug sessions
+                        // console.warn(`syncThisMonthFromDataModel: no UserRecord for resourceExternalId='${resourceLinkRecord.resourceExternalId}', workItem='${workItemID}'`);
+                        continue;
+                    }
+
+                    // Choose the forecast field based on laborBudget
+                    // Do NOT overwrite per-link assignment values sourced from the daily query.
+                    // The daily model is authoritative for per-assignment current-month values.
+                    // We only mark existing yearMonthlyRecords as current month so downstream logic
+                    // knows which records correspond to the current month.
+                    for (let yrRec of resourceLinkRecord.yearMonthlyRecords) {
+                        if (yrRec.year === thisYear && yrRec.month === thisMonth) {
+                            yrRec.isCurrentMonth = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('Error syncing project model current month with dataModel', e);
         }
     }
 
@@ -684,60 +755,180 @@ class ProjectRemainingForecastFeesModel {
                     if (resourceLinkExternalID) {
                         resourceLinkRecord.resourceLinkExternalID = resourceLinkExternalID;
                     } else {
-                        console.warn(`ResourceLinkExternalID not found for ResourceExternalID: ${resourceLinkRecord.resourceExternalId}, WorkItemExternalID: ${workItemRecord.externalID}`);
+                       // console.warn(`ResourceLinkExternalID not found for ResourceExternalID: ${resourceLinkRecord.resourceExternalId}, WorkItemExternalID: ${workItemRecord.externalID}`);
                     }
                 }
             }
         }
  // Save forecast effort balance method to save the model per each tasks and resource link assignment 
     saveForecastEffortBalance() {
-        if (typeof regularResourceLinkManager === 'undefined') {
-            console.error("Global variable 'regularResourceLinkManager' is not defined.");
-            return;
+    if (typeof regularResourceLinkManager === 'undefined') {
+        console.error("Global variable 'regularResourceLinkManager' is not defined.");
+        return;
+    }
+
+    // The daily query provides per-link current-month remaining forecast (from this Monday until EOM).
+    // That per-link daily data is authoritative for the save. Do not redistribute or override here.
+
+    const updates = [];
+
+    for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+        for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+            const resourceLinkID = resourceLinkRecord.resourceLinkExternalID;
+            // Use this-month-inclusive forecast total in days, then convert to hours for save
+            const remainingForecastDays = resourceLinkRecord.getForecastUntilEOMPlusFutureInDays();
+            const RemainingForecastHours = remainingForecastDays * HOURS_PER_DAY;
+            // Fees calculated from this-month-inclusive months (per-month values converted to hours and rates)
+            const RemainingForecastFees = resourceLinkRecord.getRemainingForecastFeesFromThisMonth();
+
+            if (resourceLinkID && !isNaN(RemainingForecastHours) && !isNaN(RemainingForecastFees)) {
+                const formattedHours = `${RemainingForecastHours}h`;
+                const formattedFees = `${RemainingForecastFees.toFixed(2)}${currencyType}`;
+                updates.push({
+                    path: `/RegularResourceLink/${resourceLinkID}`,
+                    data: {
+                        C_RemainingForecastFees: formattedFees,
+                        C_ForecastEffortBalance: formattedHours
+                    }
+                });
+            } else {
+                console.warn(`Skipping update for resourceLinkID: ${resourceLinkID} due to invalid data.`);
+            }
         }
+    }
 
-        const updates = [];
+    if (updates.length > 0) {
+        const self = this;
+        API.Utils.beginUpdate();
+        processSequentialUpdates(updates, () => {
+            API.Utils.syncChanges();
+            API.Utils.endUpdate();
+            setTimeout(() => enableButton(), 3000);
+            alert('Forecast Effort Balance Saved! Please wait a few mintues then do the dual refresh to check the update in the Work Plan.');
 
-        // Iterate through each work item
+            // If caller requested restore after save (zero-before-save flow), restore now
+            try {
+                if (self && self._postSaveRestore) {
+                    if (typeof self.restoreYearMonthlyRecords === 'function') {
+                        self.restoreYearMonthlyRecords();
+                        console.log('Project model restored from backup after save (zero-before-save flow)');
+                    }
+                    self._postSaveRestore = false;
+                }
+            } catch (e) {
+                console.warn('Error restoring project model after save', e);
+            }
+        });
+    } else {
+        alert('No updates to process!');
+    }
+    }
+    // distribution logic intentionally removed: daily per-link data is authoritative and should be saved as-is
+
+    // --- Backup / Zero / Restore helpers for zero-before-save flow ---
+    // Create a deep backup of all yearMonthlyRecords on each ResourceLinkRecord so we can restore later
+    backupYearMonthlyRecords() {
         for (let [workItemID, workItemRecord] of this.workItems.entries()) {
-            // Iterate through each resource link in the work item
             for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
-                const resourceLinkID = resourceLinkRecord.resourceLinkExternalID;
-                const RemainingForecastHours = resourceLinkRecord.getTotalAssignmentInHours();
-                const RemainingForecastFees = resourceLinkRecord.getWeightedSumAssignment();
+                try {
+                    resourceLinkRecord._backupYearMonthlyRecords = JSON.parse(JSON.stringify(resourceLinkRecord.yearMonthlyRecords || []));
+                } catch (e) {
+                    resourceLinkRecord._backupYearMonthlyRecords = (resourceLinkRecord.yearMonthlyRecords || []).slice();
+                }
+            }
+        }
+        console.log('Project model backupYearMonthlyRecords completed');
+    }
 
-                if (resourceLinkID && !isNaN(RemainingForecastHours) && !isNaN(RemainingForecastFees)) {
-                    const formattedHours = `${RemainingForecastHours}h`;
-                    const formattedFees = `${RemainingForecastFees}${currencyType}`;
+    // Zero out assignmentInDays on all yearMonthlyRecords (in-place)
+    zeroYearMonthlyRecords() {
+        for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+            for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                if (!resourceLinkRecord.yearMonthlyRecords) continue;
+                resourceLinkRecord.yearMonthlyRecords.forEach(rec => {
+                    if (rec && typeof rec.assignmentInDays !== 'undefined') {
+                        rec.assignmentInDays = 0;
+                    }
+                });
+            }
+        }
+        console.log('Project model zeroYearMonthlyRecords applied');
+    }
 
-                    updates.push({
-                        path: `/RegularResourceLink/${resourceLinkID}`,
+    // Restore yearMonthlyRecords from the deep backup created earlier
+    restoreYearMonthlyRecords() {
+        for (let [workItemID, workItemRecord] of this.workItems.entries()) {
+            for (let [userExternalId, resourceLinkRecord] of workItemRecord.resourceLinks.entries()) {
+                if (resourceLinkRecord._backupYearMonthlyRecords) {
+                    try {
+                        resourceLinkRecord.yearMonthlyRecords = JSON.parse(JSON.stringify(resourceLinkRecord._backupYearMonthlyRecords));
+                    } catch (e) {
+                        resourceLinkRecord.yearMonthlyRecords = (resourceLinkRecord._backupYearMonthlyRecords || []).slice();
+                    }
+                    delete resourceLinkRecord._backupYearMonthlyRecords;
+                }
+            }
+        }
+        console.log('Project model restoreYearMonthlyRecords completed');
+    }
+
+    // Public helper: backup -> zero -> save -> (restore)
+    // When called, it will zero the in-memory model and then call the regular save.
+    // After the save completes the model will be restored from backup so the UI/diagnostics remain unchanged.
+  // Zero the stored Clarizen values using the RegularResourceLinkManager before performing the real save
+    saveForecastEffortBalanceZeroed() {
+        try {
+            if (!regularResourceLinkManager || !Array.isArray(regularResourceLinkManager.links)) {
+                console.warn('saveForecastEffortBalanceZeroed: regularResourceLinkManager not ready, running direct save');
+                this.saveForecastEffortBalance();
+                return;
+            }
+
+            const zeroUpdates = [];
+            const zeroFees = `0.00${currencyType}`;
+            const zeroHours = '0h';
+
+            for (const link of regularResourceLinkManager.links) {
+                if (link && link.externalid) {
+                    zeroUpdates.push({
+                        path: `/RegularResourceLink/${link.externalid}`,
                         data: {
-                            C_RemainingForecastFees: formattedFees,
-                            C_ForecastEffortBalance: formattedHours
+                            C_RemainingForecastFees: zeroFees,
+                            C_ForecastEffortBalance: zeroHours
                         }
                     });
                 }
             }
-        }
 
-        if (updates.length > 0) {
+            if (zeroUpdates.length === 0) {
+                console.warn('saveForecastEffortBalanceZeroed: no links found to zero, running direct save');
+                this.saveForecastEffortBalance();
+                return;
+            }
+
+            // 1) Zero everything per RegularResourceLink
             API.Utils.beginUpdate();
-
-            processSequentialUpdates(updates, () => {
+            processSequentialUpdates(zeroUpdates, () => {
+                // 2) Ensure zeroing is committed before the actual save
                 API.Utils.syncChanges();
                 API.Utils.endUpdate();
-                setTimeout(enableButton(), 3000);
-                alert('Forecast Effort Balance Saved!');
+
+                // 3) Now perform the actual save (no backup/restore)
+                this.saveForecastEffortBalance();
             });
-        } else {
-            alert('No updates to process!');
+        } catch (e) {
+            console.warn('saveForecastEffortBalanceZeroed failed', e);
+            try { API.Utils.endUpdate(); } catch (_) {}
+            // Fallback: do the actual save if zeroing flow fails
+            this.saveForecastEffortBalance();
         }
     }
+
 }
 
 
 class WorkItemRecord {
+
     constructor(externalID, workItemSysId, workItemName) {
         this.externalID = externalID; // Unique identifier
         this.workItemSysId = workItemSysId;
@@ -747,9 +938,9 @@ class WorkItemRecord {
     }
 
     // Add or update a resource link record
-    addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName) {
+    addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId, jobTitleExternalID, jobTitleName) {
         if (!this.resourceLinks.has(userExternalId)) {
-            this.resourceLinks.set(userExternalId, new ResourceLinkRecord(resourceName, resourceExternalId,jobTitleExternalID,jobTitleName));
+            this.resourceLinks.set(userExternalId, new ResourceLinkRecord(resourceName, resourceExternalId, jobTitleExternalID, jobTitleName));
         }
         return this.resourceLinks.get(userExternalId);
     }
@@ -758,35 +949,38 @@ class WorkItemRecord {
     getResourceLink(userExternalId) {
         return this.resourceLinks.get(userExternalId);
     }
-     // Extract text after "/Task/" from externalID
-     extractTaskID() {
+
+    // Extract text after "/Task/" from externalID
+    extractTaskID() {
         const taskPrefix = "/Task/";
         return this.externalID.startsWith(taskPrefix) ? this.externalID.slice(taskPrefix.length) : null;
     }
 }
 
 class ResourceLinkRecord {
-    constructor(resourceName, resourceExternalId,jobTitleExternalID,jobTitleName) {
+    constructor(resourceName, resourceExternalId, jobTitleExternalID, jobTitleName) {
         this.resourceName = resourceName;
         this.resourceExternalId = resourceExternalId;
-        this.jobTitleExternalID=jobTitleExternalID;
-        this.jobTitleName=jobTitleName;
+        this.jobTitleExternalID = jobTitleExternalID;
+        this.jobTitleName = jobTitleName;
         this.resourceLinkExternalID = null; // ResourceLinkExternalID will start as null and will be updated after the resourcelink model is loaded
         // Array of YearMonthlyRecords
         this.yearMonthlyRecords = [];
     }
 
     // Add or update a year-month record
-    addOrUpdateYearMonthlyRecord(year, month, assignmentInHours = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
+    addOrUpdateYearMonthlyRecord(year, month, assignmentInDays = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
+        // We store monthly records in days to match the UI representation (Forecast Until EOM is in days).
         let existingRecord = this.yearMonthlyRecords.find(record => record.year === year && record.month === month);
 
         if (existingRecord) {
-            // Cumulatively add assignmentInHours if record exists
-            existingRecord.assignmentInHours += assignmentInHours;
+            // Accumulate assignmentInDays for existing records so daily rows sum up for the month.
+            existingRecord.assignmentInDays += assignmentInDays;
+            // If any incoming record marks this as current month, ensure flag is preserved.
+            if (isCurrentMonth) existingRecord.isCurrentMonth = true;
         } else {
-
             // Add new record if it does not exist
-            this.yearMonthlyRecords.push(new YearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth));
+            this.yearMonthlyRecords.push(new YearMonthlyRecord(year, month, assignmentInDays, rate, currencyExchange, isCurrentMonth));
         }
     }
 
@@ -797,21 +991,84 @@ class ResourceLinkRecord {
 
     // Method to calculate the sum of assignmentInHours across all year-month records
     getTotalAssignmentInHours() {
-        return this.yearMonthlyRecords.reduce((sum, record) => sum + record.assignmentInHours, 0);
+        // Convert stored days into hours for callers that expect hours
+        return this.yearMonthlyRecords.reduce((sum, record) => sum + (record.assignmentInDays || 0) * HOURS_PER_DAY, 0);
     }
 
     // Method to calculate the weighted sum of assignmentInHours * rate * currencyExchange across all year-month records
     getWeightedSumAssignment() {
-        return this.yearMonthlyRecords.reduce((sum, record) => sum + (record.assignmentInHours * record.rate * record.currencyExchange), 0);
+        // Stored assignment is in days; convert to hours before applying rate (rates are per hour)
+        return this.yearMonthlyRecords.reduce((sum, record) => {
+            const rateValue = record.rate?.regularRate?.value || 0;
+            const sourceCurrency = record.rate?.regularRate?.currency || 'AUD';
+            const exchangeRate = record.currencyExchange || 1;
+            const hours = (record.assignmentInDays || 0) * HOURS_PER_DAY;
+            const convertedValue = convertToProjectCurrency(
+                hours * rateValue,
+                sourceCurrency,
+                currencyType,
+                exchangeRate,
+                record.month,
+                record.year
+            );
+            return sum + convertedValue;
+        }, 0);
+    }
+
+    // Return total assignment in DAYS from this month (inclusive) onward
+    getForecastUntilEOMPlusFutureInDays() {
+        try {
+            const cutoff = new Date(thisYear, thisMonth - 1, 1);
+            return this.yearMonthlyRecords.reduce((sum, r) => {
+                const recDate = new Date(r.year, r.month - 1, 1);
+                if (recDate >= cutoff) return sum + (Number(r.assignmentInDays) || 0);
+                return sum;
+            }, 0);
+        } catch (e) {
+            console.warn('getForecastUntilEOMPlusFutureInDays failed', e);
+            return 0;
+        }
+    }
+
+    // Compute remaining forecast FEES for this month (inclusive) onward by converting
+    // each month's per-link assignment (days -> hours) and applying that month's rate and exchange.
+    // This uses the per-month values already present in the model (no redistribution/proration).
+    getRemainingForecastFeesFromThisMonth() {
+        try {
+            const cutoff = new Date(thisYear, thisMonth - 1, 1);
+            return this.yearMonthlyRecords.reduce((sum, record) => {
+                const recDate = new Date(record.year, record.month - 1, 1);
+                if (recDate >= cutoff) {
+                    const rateValue = record.rate?.regularRate?.value || 0;
+                    const sourceCurrency = record.rate?.regularRate?.currency || 'AUD';
+                    const exchangeRate = record.currencyExchange || 1;
+                    const hours = (record.assignmentInDays || 0) * HOURS_PER_DAY;
+                    const convertedValue = convertToProjectCurrency(
+                        hours * rateValue,
+                        sourceCurrency,
+                        currencyType,
+                        exchangeRate,
+                        record.month,
+                        record.year
+                    );
+                    return sum + convertedValue;
+                }
+                return sum;
+            }, 0);
+        } catch (e) {
+            console.warn('getRemainingForecastFeesFromThisMonth failed', e);
+            return 0;
+        }
     }
 }
 
 class YearMonthlyRecord {
-    constructor(year = 0, month = 0, assignmentInHours = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
+    constructor(year = 0, month = 0, assignmentInDays = 0, rate = 0, currencyExchange = 0, isCurrentMonth = false) {
         this.year = year; // Number
         this.month = month; // Number
-        this.assignmentInHours = assignmentInHours; // Number
-        this.rate = rate; // Number
+        // Store assignment as days to match UI representation; conversions to hours happen where needed
+        this.assignmentInDays = assignmentInDays; // Number
+        this.rate = rate; // Object { regularRate: {value, currency}, overtimeRate: {...} }
         this.currencyExchange = currencyExchange; // Number
         this.isCurrentMonth = isCurrentMonth; // Boolean
     }
@@ -840,35 +1097,189 @@ function buildProjectRemainingForecastFeesModel(results, numOfMonths) {
         const jobTitleExternalID=record.User.JobTitle.externalid;
         const jobTitleName = record.User.JobTitle.Name;
         // Extract date-related information
-        const date = new Date(record.Date);
-        const year = date.getFullYear();
-        const month = date.getMonth() + 1; // JS months are 0-based
-        const isCurrentMonth = new Date().getMonth() + 1 === month && new Date().getFullYear() === year;
+            const date = new Date(record.Date);
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1; // JS months are 0-based
+            const isCurrentMonth = new Date().getMonth() + 1 === month && new Date().getFullYear() === year;
 
-        // Determine assignment in hours based on laborBudget, if the date is in the oast set the value to zero
-        const assignmentInHours = isDateBetween(record.Date, thisMonday, toEndDate)
-             ? (laborBudget === "Task Assignment"
-                ? record.Work?.value || 0
-                : record.ProjectAssignment?.value || 0)
-              : 0;
+            // We only want daily records from thisMonday until the end of this month (lastDayOfThisMondayMonth)
+            // and monthly aggregated records from firstDateOfNextMonth until the project end date (toEndDate).
+            // This prevents double-counting the current month when both daily and monthly queries are present.
+            let assignmentInHours = 0;
+            let assignmentInDays = 0;
+
+            try {
+                // daily portion (this Monday -> end of this Monday's month)
+        if (isDateBetween(record.Date, thisMonday, lastDayOfThisMondayMonth)) {
+            // The incoming values (record.Work.value / record.ProjectAssignment.value) are hours.
+            // Convert to days to match the rest of the model/UI which uses days.
+            const rawVal = (laborBudget === "Task Assignment") ? (record.Work?.value || 0) : (record.ProjectAssignment?.value || 0);
+            assignmentInHours = Number(rawVal) || 0;
+            assignmentInDays = assignmentInHours / HOURS_PER_DAY;
+                }
+
+                // monthly portion (first of next month -> project end)
+                else if (isDateBetween(record.Date, firstDateOfNextMonth, toEndDate)) {
+                    const rawVal = (laborBudget === "Task Assignment") ? (record.Work?.value || 0) : (record.ProjectAssignment?.value || 0);
+                    assignmentInHours = Number(rawVal) || 0;
+                    assignmentInDays = assignmentInHours / HOURS_PER_DAY;
+                } else {
+                    // outside the ranges we care about for project-level save, skip this record
+                    continue;
+                }
+            } catch (e) {
+                // If any unexpected structure, skip the record
+                console.warn('Skipping record due to error parsing dates/values', e, record);
+                continue;
+            }
 
         // Extract additional properties if available
-        const rate = record.ProjectAssignment?.value || 0;
-
-        var currencyExchange = (currencyType === "AUD") ? 1 : 0;// Assuming a default exchange rate; modify as needed
-
-        //add the record only if the record date (monthly or daily) is falling between this momday and the project end date
+        //const rate = record.ProjectAssignment?.value || 0;
+        let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, month, year);   
+        //var currencyExchange = (currencyType === "AUD") ? 1 : 1;
+        let exchangeRate=0;
+        if (currencyType !== "AUD") {
+            //exchangeTable.getExchangeRateForCurrencyAndMonth("USD", 12, 2021))
+            exchangeRate= exchangeTable.getExchangeRateForCurrencyAndMonth(currencyType,month,year);
+        } else {
+            exchangeRate=1;
+        }
+        //add the record only if the record date (monthly or daily) is falling between this monday and the project end date
         //if(isDateBetween(record.Date,thisMonday,toEndDate)){
             // Add or update work item in the model
-        const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
+            const workItem = projectRemainingForecastFeesModel.addOrUpdateWorkItem(workItemId, workItemSysId, workItemName);
+            // Try to capture work item state from several possible result shapes.
+            try {
+                let wiState = null;
+                // Common shapes returned by different queries / timephase types
+                if (record.WorkITem && record.WorkITem.State && record.WorkITem.State.Name) wiState = record.WorkITem.State.Name;
+                else if (record.WorkItem && record.WorkItem.State && record.WorkItem.State.Name) wiState = record.WorkItem.State.Name;
+                else if (record.WorkITem && typeof record.WorkITem.State === 'string') wiState = record.WorkITem.State;
+                else if (record.WorkItem && typeof record.WorkItem.State === 'string') wiState = record.WorkItem.State;
+                else if (record.State && record.State.Name) wiState = record.State.Name;
+
+                if (wiState) {
+                    workItem.state = wiState;
+                }
+            } catch (e) {
+                // Non-fatal — continue without state
+            }
 
             // Add or update resource link for the work item
-        const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId,jobTitleExternalID,jobTitleName);
+        const resourceLink = workItem.addOrUpdateResourceLink(userExternalId, resourceName, resourceExternalId, jobTitleExternalID, jobTitleName);
 
-            // Add or update the year-month record for the resource link
-        resourceLink.addOrUpdateYearMonthlyRecord(year, month, assignmentInHours, rate, currencyExchange, isCurrentMonth);
+    // Decide assignmentInDays for this record.
+    // For the current month prefer the authoritative per-user forecast value from dataModel
+    let finalAssignmentInDays = assignmentInDays;
+    try {
+        // Keep finalAssignmentInDays from the incoming daily/monthly data.
+        // Do NOT overwrite current-month per-link daily values with aggregated per-user UI values here.
+    } catch (e) {
+        console.warn('Error resolving authoritative current-month forecast from dataModel', e);
+    }
+
+    // Add or update the year-month record for the resource link using the final assignmentInDays
+    resourceLink.addOrUpdateYearMonthlyRecord(year, month, finalAssignmentInDays, JobTitlerates, exchangeRate, isCurrentMonth);
         //}       
     }
+
+    // increment build counter (we will print sample only after rates have been loaded and applied)
+    try {
+        projectRemainingForecastBuildCount = (projectRemainingForecastBuildCount || 0) + 1;
+    } catch (e) {
+        console.warn('Error incrementing projectRemainingForecastBuildCount', e);
+    }
+
+    // Diagnostics: count how many work items have state populated vs missing (helpful when query fields vary)
+    try {
+        let total = 0, withState = 0, withoutState = 0;
+        for (const wi of projectRemainingForecastFeesModel.workItems.values()) {
+            total++;
+            if (wi.state) withState++; else withoutState++;
+        }
+        console.log(`buildProjectRemainingForecastFeesModel: workItems=${total}, withState=${withState}, withoutState=${withoutState}`);
+    } catch (e) { /* ignore diagnostics errors */ }
+}
+
+// Debug helper: print first 2 work items and their resource links + monthly records
+function printProjectRemainingForecastSample() {
+    if (!projectRemainingForecastFeesModel) {
+        console.log('projectRemainingForecastFeesModel not initialized');
+        return;
+    }
+
+    // Only print work items that explicitly have workItem.state === 'Active'
+    const items = Array.from(projectRemainingForecastFeesModel.workItems.values());
+    console.log("--- Project Remaining Forecast Sample (work items where workItem.state === 'Active') ---");
+    items.forEach((workItem, wiIndex) => {
+        try {
+            // Filter strictly on the `state` property matching 'Active'
+            if (workItem.state !== 'Active') return;
+
+            console.log(`WorkItem ${wiIndex + 1}: externalID=${workItem.externalID}, SYSID=${workItem.workItemSysId}, name=${workItem.workItemName}, state=${workItem.state}`);
+            const resourceLinks = Array.from(workItem.resourceLinks.values()).slice(0, 50); // safety cap
+            if (resourceLinks.length === 0) {
+                console.log('  (no resource links)');
+            }
+            resourceLinks.forEach((rl, rlIndex) => {
+                console.log(`  ResourceLink ${rlIndex + 1}: resourceName=${rl.resourceName}, resourceExternalId=${rl.resourceExternalId}, jobTitleExternalID=${rl.jobTitleExternalID}, jobTitleName=${rl.jobTitleName}, resourceLinkExternalID=${rl.resourceLinkExternalID}`);
+                if (!rl.yearMonthlyRecords || rl.yearMonthlyRecords.length === 0) {
+                    console.log('    (no yearMonthlyRecords)');
+                    return;
+                }
+                rl.yearMonthlyRecords.forEach((yrRec) => {
+                    try {
+                        const monthStr = `${yrRec.year}-${String(yrRec.month).padStart(2, '0')}`;
+                        // We store assignment as days in the model. Show both days and converted hours for clarity.
+                        const assignmentDays = typeof yrRec.assignmentInDays === 'number' ? yrRec.assignmentInDays : Number(yrRec.assignmentInDays) || 0;
+                        const assignmentHours = assignmentDays * HOURS_PER_DAY;
+
+                        // Normalize rate display: support several shapes that may appear in yrRec.rate
+                        let rateValue = null;
+                        let rateCurrency = '';
+                        let rateJson = null;
+                        if (yrRec.rate) {
+                            if (yrRec.rate.regularRate && typeof yrRec.rate.regularRate.value !== 'undefined') {
+                                rateValue = yrRec.rate.regularRate.value;
+                                rateCurrency = yrRec.rate.regularRate.currency || '';
+                            } else if (yrRec.rate.regular && typeof yrRec.rate.regular.value !== 'undefined') {
+                                rateValue = yrRec.rate.regular.value;
+                                rateCurrency = yrRec.rate.regular.currency || '';
+                            } else if (typeof yrRec.rate === 'object') {
+                                try { rateJson = JSON.stringify(yrRec.rate); } catch (e) { rateJson = String(yrRec.rate); }
+                            } else {
+                                rateValue = yrRec.rate;
+                            }
+                        }
+
+                        const exch = (yrRec.currencyExchange !== undefined && yrRec.currencyExchange !== null) ? yrRec.currencyExchange : null;
+
+                        const rateDisplay = rateValue !== null && rateValue !== undefined ? `${rateValue}` : (rateJson || '0');
+                        const currencySuffix = rateCurrency ? ` ${rateCurrency}` : '';
+
+                        // Calculate converted fees for this month: hours * rate * exchange -> converted to project currency
+                        let feesConverted = 0;
+                        try {
+                            const srcCurrency = rateCurrency || '';
+                            const hrs = assignmentHours || 0;
+                            const rateVal = Number(rateValue) || 0;
+                            feesConverted = convertToProjectCurrency(hrs * rateVal, srcCurrency, currencyType, exch, yrRec.month, yrRec.year);
+                        } catch (e) {
+                            feesConverted = 0;
+                        }
+
+                        console.log(`    ${monthStr}: assignmentDays=${assignmentDays}, assignmentHours=${assignmentHours}, isCurrentMonth=${!!yrRec.isCurrentMonth}, rate=${rateDisplay}${currencySuffix}, currencyExchange=${exch}, fees=${feesConverted.toFixed(2)}${currencyType}`);
+                        if (rateJson) console.log(`      rateObject: ${rateJson}`);
+                    } catch (e) {
+                        console.warn('    Error printing yearMonthlyRecord', e, yrRec);
+                    }
+                });
+            });
+        } catch (e) {
+            console.warn('Error printing workItem', e, workItem);
+        }
+    });
+    console.log('--- End of sample ---');
 }
 
 
@@ -966,9 +1377,11 @@ function enableButton() {
     const downloadExcelBtn = document.getElementById('downloadExcel');    
     downloadExcelBtn.disabled = false;
     downloadExcelBtn.classList.add('btn-enabled');
+        console.log('enableButton called', { laborBudget: laborBudget });
     if (laborBudget === "Task Assignment") { 
       saveButton.disabled = false;  
       saveButton.classList.add('btn-enabled');
+            console.log('enableButton: save button enabled');
     }
   
 }
@@ -981,13 +1394,55 @@ function disableButton() {
     downloadExcelBtn.disabled = true;
     saveButton.classList.remove('btn-enabled');
     downloadExcelBtn.classList.remove('btn-enabled');
+    console.log('disableButton called: save/download disabled');
+}
+
+// Deterministic readiness checker: enable the save button only when required models are loaded.
+function ensureEnableButtonReady() {
+    try {
+        // Determine required model readiness based on the selected forecast type
+        const needEffort = (selectedForecastType === undefined) || (selectedForecastType === FORECAST_TYPES.EFFORTS);
+        const needFinance = (selectedForecastType === FORECAST_TYPES.FINANCIALS);
+
+        const effortReady = !!effortModelLoaded || !needEffort;
+        const financeReady = !!financeModelLoaded || !needFinance;
+        const projectReady = (WorkItemtype !== 'Project') || !!projectRemainingForecastFeesModel;
+
+        const ready = effortReady && financeReady && projectReady;
+        console.log('ensureEnableButtonReady checking', { selectedForecastType, needEffort, needFinance, effortModelLoaded: !!effortModelLoaded, financeModelLoaded: !!financeModelLoaded, projectModelPresent: !!projectRemainingForecastFeesModel, WorkItemtype: WorkItemtype, ready: ready });
+
+        // track retry attempts to avoid infinite looping
+        ensureEnableButtonReady._attempts = (ensureEnableButtonReady._attempts || 0) + 1;
+
+        if (ready) {
+            console.log('ensureEnableButtonReady: conditions met, calling enableButton');
+            enableButton();
+            ensureEnableButtonReady._attempts = 0; // reset counter
+        } else {
+            if (ensureEnableButtonReady._attempts > 120) { // ~60s with 500ms backoff
+                console.warn('ensureEnableButtonReady: giving up after too many attempts', { attempts: ensureEnableButtonReady._attempts });
+                return;
+            }
+            // Retry shortly; using a small backoff to avoid tight loop
+            console.log('ensureEnableButtonReady: not ready, retrying in 500ms');
+            setTimeout(ensureEnableButtonReady, 500);
+        }
+    } catch (e) {
+        console.warn('ensureEnableButtonReady encountered error, retrying in 1000ms', e);
+        setTimeout(ensureEnableButtonReady, 1000);
+    }
 }
 //main save function will call the task level save or the project level model
 function saveForecastModel(event){
     if(WorkItemtype === "Project"){
         if (projectRemainingForecastFeesModel) {
             disableButton();
-            projectRemainingForecastFeesModel.saveForecastEffortBalance(); 
+            // Use the zero-before-save wrapper so the model can be zeroed (and restored) for a controlled save
+            if (typeof projectRemainingForecastFeesModel.saveForecastEffortBalanceZeroed === 'function') {
+                projectRemainingForecastFeesModel.saveForecastEffortBalanceZeroed();
+            } else {
+                projectRemainingForecastFeesModel.saveForecastEffortBalance();
+            }
         }else {
              console.log("Cannot save - projectRemainingForecastFeesModel is not loaded or empty");
         }
@@ -1044,8 +1499,9 @@ function saveForecastEffortBalanceTaskLevel(event) {
             API.Utils.syncChanges();
             API.Utils.endUpdate(); // End update transaction once all updates are done
             API.Utils.endLoading();
-            setTimeout(enableButton(), 3000);
-            alert('Forecast Effort Balance Saved!');
+            console.log('Loading complete: using ensureEnableButtonReady instead of timed enable');
+            ensureEnableButtonReady();
+            alert('Forecast Effort Balance Saved! Please wait a few minutes then do the dual refresh to check the update in the Work Plan.');
         });
     } else {
         alert('No data to process!');
@@ -1561,23 +2017,23 @@ function QueryBuilder(caseNumber) {
     const pagingSuffix = " limit 5000 offset ";
     switch (caseNumber) {
         case 1://assignment from project level
-            return "Select WorkITem,WorkITem.EntityType,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.C_Discipline.name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
+            return "Select WorkITem,WorkITem.State.Name,WorkITem.EntityType,EntityType,WorkITem.SYSID,WorkITem.Project.SYSID,WorkITem.Name,WorkITem.Project.Name,User.C_Discipline.name,User.DisplayName,Date,User.Name,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix;
         case 2://daily forcast from this Monday until end of month from project level 
-            return "Select WorkITem,WorkITem.EntityType,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
+            return "Select WorkITem,WorkITem.EntityType,WorkITem.State.Name,EntityType,WorkITem.SYSID,WorkITem.Name,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))" +pagingSuffix ;       
         case 3://assignment from task level
-            return "Select WorkITem.Name,WorkITem.EntityType,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
+            return "Select WorkITem.Name,WorkITem.EntityType,WorkItem.SysID,WorkITem.State.Name,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseMonthly where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))"+pagingSuffix;
         case 4: //daily forcast from this Monday until end of month from task level 
-            return "Select WorkITem.Name,WorkITem.EntityType,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
+            return "Select WorkITem.Name,WorkITem.EntityType,WorkITem.State.Name,WorkItem.SysID,WorkITem,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.C_Discipline.name,User.Name,User.DisplayName,User.JobTitle.Name,User.JobTitle.externalid,ProjectAssignment,Work,ActualApproved,ActualPending from RLTimePhaseDaily where (Date>='"+thisMonday+"' and Date<='"+lastDayOfThisMondayMonth+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and ( WorkItem ='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"' or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')) or child in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent in (Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')))))" +pagingSuffix;  
         case 5://get financials for project level aggregated
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_MarkupRevenue,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkITem.State.Name,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.JobTitle.externalid,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_MarkupRevenue,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(select ExternalID from ResourceLinkFinancial where WorkItem ='/Project/"+workItemExternalID+"' and EntityType='LaborResourceLinkAggregated')" +pagingSuffix;  
         case 6://get project level actual booked values
             return "Select ReportedBy.DisplayName,ReportedBy.C_Discipline.name,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedBy.JobTitle.externalid,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+workItemExternalID+"'"+pagingSuffix;
         case 7://get financials for Task level
-            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_MarkupRevenue,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
+            return "Select EntityType,RelatedLink.WorkItem.Project.SYSID,RelatedLink.WorkITem.State.Name,RelatedLink.WorkItem.Project.Name,RelatedLink.LaborResource.DisplayName,RelatedLink.LaborResource.C_Discipline.name,RelatedLink.LaborResource.Name,RelatedLink.LaborResource.JobTitle.Name,RelatedLink.LaborResource.Name,Date,RelatedLink.DefaultCurrency,RelatedLink.CurrencyExchangeDate,PlannedBudget,PlannedRevenue,ActualCost,C_MarkupRevenue,Aggregated,ActualRevenue,RelatedLink from ResourceTimePhase where (Date>='"+fromStartDate+"' and Date<='"+toEndDate+"') and RelatedLink in(Select ExternalID from ResourceLinkFinancial where WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"'))" +pagingSuffix;  
         case 8://get Task level actual booed values
             return "Select ReportedBy.DisplayName,ReportedBy.C_Discipline.name,ReportedBy.Name,ReportedBy.JobTitle.Name,ReportedDate,C_D365PriceofItem,C_InvoiceStatus from Timesheet where ReportedDate>='"+fromStartDate+"' and ReportedDate<='"+toEndDate+"' and C_InvoiceStatus not in('Adjusted','Nonchargeable') and Project='/Project/"+projExternalID+"' and WorkItem='/Task/"+workItemExternalID+"' or WorkItem in(Select child from RealWorkItemHierarchyLink where parent='/Task/"+workItemExternalID+"')"+pagingSuffix;  
         case 9://get labor timephase data of project work items from the first date of next month until the proejct end date 
-            return "Select WorkITem,WorkITem.EntityType,WorkITem.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
+            return "Select WorkITem,WorkITem.EntityType,WorkITem.Name,WorkITem.State.Name,EntityType,WorkITem.Project.SYSID,WorkITem.Project.Name,Date,User.Name,User.C_Discipline.name,User.DisplayName,User.JobTitle.Name,ProjectAssignment,Work,ActualApproved,ActualPending,WorkItem.ChildrenCount from RLTimePhaseMonthly where (Date>='"+firstDateOfNextMonth+"' and Date<='"+toEndDate+"') and (Work>'0h' or ActualApproved>'0h' or ActualPending>'0h' or ProjectAssignment>'0h') and (Project in(Select SYSID from Project where ExternalID='"+workItemExternalID+"'))"+pagingSuffix;
         default:
             return ""; // Default case to avoid errors
     }
@@ -1665,7 +2121,7 @@ function drawData(result, numOfMonths) {
             const collType = j % 2 === 0 ? "FOR" : "ACT";
             let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, month, year);
             let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
-                rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
+                //rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
 
             const recData = value.getMonthlyRecord(year, month);
             if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
@@ -1785,20 +2241,27 @@ function drawFinancialData(numOfMonths) {
             //get job title rates fot the hint
             let JobTitlerates = jobTitlesRateModel.getRates(jobTitleExternalID, month, year);
             let rateString = 'JobTitle:'+jobTitleExternalID + `, Regular Rate: ${JobTitlerates.regularRate.value} ${JobTitlerates.regularRate.currency}, `;
-                rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
+               // rateString += `Overtime Rate: ${JobTitlerates.overtimeRate.value} ${JobTitlerates.overtimeRate.currency}`;
 
             const recData = value.getMonthlyRecord(year, month);
             if (recData && j < (numOfMonths * NUM_OF_DATA_COLUMNS)) {
-                dataToSet = j % 2 === 0 ? recData.budget : recData.actualBooked;
+                //dataToSet = j % 2 === 0 ? recData.budget : recData.actualBooked;
                 try{
                     if(j% 2===0){                    
                     exchangeRateVal = recData.exchangeRate;                    
-                    titleTXT = "Exchange Rate: "+Number(exchangeRateVal).toFixed(4) +", Value in AUD: "+Number(recData.budget).toFixed(2); 				
+                    titleTXT = "Exchange Rate: "+Number(exchangeRateVal).toFixed(4) +", Value in AUD: "+Number(recData.budget).toFixed(2); 		
+                      if (currencyType !== "AUD") { 
+                        dataToSet = recData.budget*exchangeRateVal;
+                      }	else {	
+                         dataToSet = recData.budget;
+                      }
                     }  else {                          
                     titleTXT="";			
+                       dataToSet = recData.actualBooked;
                     }
                     }catch (err){
-                        titleTXT="";	
+                        titleTXT="";
+                        dataToSet=0;	
                     }	
                     titleTXT+="| " + rateString;			
                     const cell = $("<td>")
@@ -1876,7 +2339,7 @@ function loadJobTitlesRates(numOfMonths){
 function loadRegularResourceLink(numOfMonths){
     var resultQry = new Array();
     
-    const query = "Select WorkItem.externalid,WorkItem.SYSID,WorkItem.Name,externalid,Resource.externalID,Resource.DisplayName from RegularResourceLink where WorkItem in("+leafTasksIds +") limit 5000 offset ";
+    const query = "Select WorkItem.externalid,WorkItem.State.Name,WorkItem.SYSID,WorkItem.Name,externalid,Resource.externalID,Resource.DisplayName from RegularResourceLink where WorkItem in("+leafTasksIds +") limit 5000 offset ";
    //load data with pagings 
    queryMore(0, resultQry, parseRegularResourceLinkManager, query,numOfMonths);
 } 
@@ -1946,9 +2409,43 @@ function parseJobTitlesRates(result, numOfMonths) {
     //now uypdate project forecast model with the resource links
     projectRemainingForecastFeesModel.updateResourceLinkExternalIDs();
 
+    // Ensure current-month assignmentInDays reflect the UI's forecast until EOM values
+    projectRemainingForecastFeesModel.syncThisMonthFromDataModel();
+
     // Now that the model is full, call to draw it  
     drawData(null, numOfMonths);
-    setTimeout(enableButton(), 3000);//enable the save button after load
+    console.log('Rates/job titles applied: using ensureEnableButtonReady instead of timed enable');
+    ensureEnableButtonReady();//enable the save button after load
+
+    // If the project model was built at least twice and we haven't printed yet, print sample now
+    try {
+        if (!projectRemainingForecastPrinted && projectRemainingForecastBuildCount >= 2) {
+            projectRemainingForecastPrinted = true;
+            printProjectRemainingForecastSample();
+        }
+    } catch (e) {
+        console.warn('Error attempting to print projectRemainingForecast sample after rates applied', e);
+    }
+
+    // If we're in a Task view (not Project) print the task-level sample once for debugging
+    try {
+        if (WorkItemtype !== "Project" && !projectRemainingForecastPrintedTask) {
+            projectRemainingForecastPrintedTask = true;
+            // workItemExternalID is available in the panel context and should contain the current task external ID
+            if (typeof workItemExternalID !== 'undefined' && workItemExternalID) {
+                // Ensure the project model has the work item key as stored (externalID should be like '/Task/123')
+                // Print the authoritative UserRecord values for this task (these are the values used by task-level save)
+                try { printTaskUserRecordSample(workItemExternalID); } catch (e) { console.warn('printTaskUserRecordSample not available', e); }
+            } else {
+                // If workItemExternalID isn't set, try constructing from currentProject if available
+                if (typeof data !== 'undefined' && data.currentProject && data.currentProject.ExternalID) {
+                    try { printTaskUserRecordSample(data.currentProject.ExternalID); } catch (e) { console.warn('printTaskUserRecordSample not available', e); }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Error attempting to print taskRemainingForecast sample after rates applied', e);
+    }
 }
 
 
@@ -2282,39 +2779,47 @@ function calculateColumnSummary(monthVal)
     4. Return the date**: It provides the date of "this Monday" or the first working day of the current month in `YYYY-MM-DD` format.
  */
 
-function getThisMondayOrFirstWorkingDay() {
-    const today = new Date();
-    const dayOfWeek = today.getDay(); // 0 (Sunday) to 6 (Saturday)
-    let daysToMonday = 1 - dayOfWeek; // Monday is 1
-
-    // If today is Sunday, set daysToMonday to 1 for the next day (Monday)
-    if (dayOfWeek === 0) {
-        daysToMonday = 1;
-    }
-
-    // Calculate this Monday's date
-    const thisMonday = new Date(today);
-    thisMonday.setDate(today.getDate() + daysToMonday);
-
-    // Check if this Monday is in the previous month
-    if (thisMonday.getMonth() < today.getMonth() || thisMonday.getFullYear() < today.getFullYear()) {
-        // If so, get the first day of the current month
-        const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-
-        // Adjust to the first working day if the 1st is on a weekend
-        let firstWorkingDay = new Date(firstDayOfMonth);
-        const firstDayOfWeek = firstDayOfMonth.getDay();
-        if (firstDayOfWeek === 0) { // Sunday
-            firstWorkingDay.setDate(firstDayOfMonth.getDate() + 1); // Move to Monday
-        } else if (firstDayOfWeek === 6) { // Saturday
-            firstWorkingDay.setDate(firstDayOfMonth.getDate() + 2); // Move to Monday
+    function getThisMondayOrFirstWorkingDay() {
+        const today = new Date();
+        const dayOfWeek = today.getDay(); // 0 (Sunday) to 6 (Saturday)
+        let daysToMonday = 1 - dayOfWeek; // Monday is 1
+    
+        // If today is Sunday, set daysToMonday to 1 for the next day (Monday)
+        if (dayOfWeek === 0) {
+            daysToMonday = 1;
         }
-        
-        return firstWorkingDay.toISOString().split('T')[0];
+    
+        // Calculate this Monday's date
+        const thisMonday = new Date(today);
+        thisMonday.setDate(today.getDate() + daysToMonday);
+    
+        // Check if this Monday is in the previous month
+        if (
+            thisMonday.getMonth() < today.getMonth() ||
+            thisMonday.getFullYear() < today.getFullYear()
+        ) {
+            // If so, get the first day of the current month
+            const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    
+            // Adjust to the first working day if the 1st is on a weekend
+            let firstWorkingDay = new Date(firstDayOfMonth);
+            const firstDayOfWeek = firstDayOfMonth.getDay();
+            if (firstDayOfWeek === 0) {
+                firstWorkingDay.setDate(firstDayOfMonth.getDate() + 1);
+            } else if (firstDayOfWeek === 6) {
+                firstWorkingDay.setDate(firstDayOfMonth.getDate() + 2);
+            }
+    
+            return formatLocalISODate(firstWorkingDay);
+        }
+    
+        return formatLocalISODate(thisMonday);
     }
-
-    // Otherwise, return this Monday
-    return thisMonday.toISOString().split('T')[0];
+    
+//will give you the date as YYYY-MM-DD in local time, regardless of the browser's timezone (Israel, US, etc.).    
+function formatLocalISODate(date) {
+    const pad = n => n.toString().padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 // Function to get the last day of the month for a given date (thisMonday)
@@ -2345,7 +2850,8 @@ function getFirstDateOfNextMonth() {
     const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
 
     // Return in ISO format (YYYY-MM-DD)
-    return nextMonth.toISOString().split('T')[0];
+    //return nextMonth.toISOString().split('T')[0];
+    return formatLocalISODate(nextMonth);
 }
 
 /**
@@ -2531,3 +3037,288 @@ function createExcelFile(data, columns, fileName) {
     // Generate Excel file and trigger download
     XLSX.writeFile(workbook, fileName);
 }
+
+
+// Helper function to convert a value to the project currency
+function convertToProjectCurrency(value, sourceCurrency, targetCurrency, exchangeRate, month, year) {
+    try {
+        if (isNaN(value) || value === 0) return 0;
+        if (sourceCurrency === targetCurrency || !sourceCurrency) return value;
+        if (isNaN(exchangeRate) || exchangeRate === 0) {
+            exchangeRate = exchangeTable.getExchangeRateForCurrencyAndMonth(targetCurrency, month, year);
+        }
+        return value * exchangeRate;
+    } catch (error) {
+        console.error(`Error converting value to ${targetCurrency}:`, error.message);
+        return 0;
+    }
+}
+
+// Debug helper: print a detailed sample for a specific task (work item)
+// Usage from console: printTaskRemainingForecastSample('/Task/12345')
+function printTaskRemainingForecastSample(taskExternalID) {
+    if (!projectRemainingForecastFeesModel) {
+        console.log('projectRemainingForecastFeesModel not initialized');
+        return;
+    }
+
+    if (!taskExternalID) {
+        console.log('Please provide taskExternalID, e.g. printTaskRemainingForecastSample("/Task/123")');
+        return;
+    }
+
+    const workItem = projectRemainingForecastFeesModel.getWorkItem(taskExternalID);
+    if (!workItem) {
+        console.log(`No work item found in project model for ${taskExternalID}`);
+        return;
+    }
+
+    console.log(`--- Task Remaining Forecast Sample for ${taskExternalID} ---`);
+    console.log(`WorkItem: externalID=${workItem.externalID}, SYSID=${workItem.workItemSysId}, name=${workItem.workItemName}`);
+
+    const resourceLinks = Array.from(workItem.resourceLinks.values());
+    if (resourceLinks.length === 0) {
+        console.log('  (no resource links)');
+    }
+
+    // Work-item level aggregates
+    let wi_sumHours = 0;
+    let wi_sumFeesSource = 0;
+    let wi_sumFeesConverted = 0;
+
+    resourceLinks.forEach((rl, rlIndex) => {
+        try {
+            console.log(`  ResourceLink ${rlIndex + 1}: resourceName=${rl.resourceName}, resourceExternalId=${rl.resourceExternalId}, jobTitleExternalID=${rl.jobTitleExternalID}, jobTitleName=${rl.jobTitleName}, resourceLinkExternalID=${rl.resourceLinkExternalID}`);
+
+            // Lookup matching user in dataModel
+            const userKey = '/User/' + rl.resourceExternalId;
+            const userRec = dataModel.get(userKey);
+            if (userRec) {
+                console.log(`    -> dataModel user found: userKey=${userKey}, forecastTaskAssignmentUntilEOM=${userRec.forecastTaskAssignmentUntilEOM}, forecastProjectAssignmentUntilEOM=${userRec.forecastProjectAssignmentUntilEOM}`);
+            } else {
+                console.log(`    -> dataModel user NOT found for userKey=${userKey}`);
+            }
+
+            // reset per-resource accumulators
+            rl._sumHours = 0;
+            rl._sumFeesSource = 0;
+            rl._sumFeesConverted = 0;
+
+            if (!rl.yearMonthlyRecords || rl.yearMonthlyRecords.length === 0) {
+                console.log('    (no yearMonthlyRecords)');
+                return;
+            }
+
+            rl.yearMonthlyRecords.forEach((yrRec) => {
+                try {
+                    const monthStr = `${yrRec.year}-${String(yrRec.month).padStart(2, '0')}`;
+                    const assignmentDays = typeof yrRec.assignmentInDays === 'number' ? yrRec.assignmentInDays : Number(yrRec.assignmentInDays) || 0;
+                    const assignmentHours = assignmentDays * HOURS_PER_DAY;
+
+                    // Normalize rate
+                    let rateValue = null;
+                    let rateCurrency = '';
+                    let rateJson = null;
+                    if (yrRec.rate) {
+                        if (yrRec.rate.regularRate && typeof yrRec.rate.regularRate.value !== 'undefined') {
+                            rateValue = yrRec.rate.regularRate.value;
+                            rateCurrency = yrRec.rate.regularRate.currency || '';
+                        } else if (yrRec.rate.regular && typeof yrRec.rate.regular.value !== 'undefined') {
+                            rateValue = yrRec.rate.regular.value;
+                            rateCurrency = yrRec.rate.regular.currency || '';
+                        } else if (typeof yrRec.rate === 'object') {
+                            try { rateJson = JSON.stringify(yrRec.rate); } catch (e) { rateJson = String(yrRec.rate); }
+                        } else {
+                            rateValue = yrRec.rate;
+                        }
+                    }
+
+                    const exch = (yrRec.currencyExchange !== undefined && yrRec.currencyExchange !== null) ? yrRec.currencyExchange : null;
+                    const rateDisplay = rateValue !== null && rateValue !== undefined ? `${rateValue}` : (rateJson || '0');
+                    const currencySuffix = rateCurrency ? ` ${rateCurrency}` : '';
+
+                    // calculate fees in source currency and converted to project currency
+                    const hrs = Number(assignmentHours) || 0;
+                    const rVal = Number(rateValue) || 0;
+                    const feesSource = hrs * rVal; // in source currency
+                    const feesConverted = convertToProjectCurrency(feesSource, rateCurrency || '', currencyType, exch, yrRec.month, yrRec.year);
+
+                    // accumulate per-resource totals (we'll define sums on outer scope)
+                    rl._sumHours += hrs;
+                    rl._sumFeesSource += feesSource;
+                    rl._sumFeesConverted += feesConverted;
+
+                    console.log(`    ${monthStr}: assignmentDays=${assignmentDays}, assignmentHours=${assignmentHours}, isCurrentMonth=${!!yrRec.isCurrentMonth}` +
+                        `, rate=${rateDisplay}${currencySuffix}, currencyExchange=${exch}, feesSource=${feesSource.toFixed(2)}${rateCurrency || ''}, feesConverted=${feesConverted.toFixed(2)}${currencyType}`);
+                    if (rateJson) console.log(`      rateObject: ${rateJson}`);
+
+                } catch (e) {
+                    console.warn('    Error printing yearMonthlyRecord', e, yrRec);
+                }
+            });
+
+            // After listing months for this resource, print per-resource totals
+            try {
+                console.log(`    -> Resource totals: totalHours=${(rl._sumHours).toFixed(2)}, totalFeesSource=${(rl._sumFeesSource).toFixed(2)}${/* show currency if available */ ''} , totalFeesConverted=${(rl._sumFeesConverted).toFixed(2)}${currencyType}`);
+            } catch (e) { /* ignore */ }
+
+            // accumulate into work-item totals
+            wi_sumHours += rl._sumHours || 0;
+            wi_sumFeesSource += rl._sumFeesSource || 0;
+            wi_sumFeesConverted += rl._sumFeesConverted || 0;
+
+        } catch (e) {
+            console.warn('Error printing resourceLink', e, rl);
+        }
+    });
+
+    // Print work-item level totals across all resource links
+    try {
+        console.log(`WorkItem totals: totalHours=${wi_sumHours.toFixed(2)}, totalFeesSource=${wi_sumFeesSource.toFixed(2)}, totalFeesConverted=${wi_sumFeesConverted.toFixed(2)}${currencyType}`);
+    } catch (e) { /* ignore */ }
+
+    console.log(`--- End of task sample for ${taskExternalID} ---`);
+}
+
+// Expose for console convenience
+window.printTaskRemainingForecastSample = printTaskRemainingForecastSample;
+
+// Debug helper: print the UserRecord entries (authoritative UI values) for users on a specific task
+// Usage from console: printTaskUserRecordSample('/Task/12345')
+function printTaskUserRecordSample(taskExternalID) {
+    if (!regularResourceLinkManager) {
+        console.log('regularResourceLinkManager not initialized');
+        return;
+    }
+
+    if (!taskExternalID) {
+        console.log('Please provide taskExternalID, e.g. printTaskUserRecordSample("/Task/123")');
+        return;
+    }
+
+    console.log(`--- Task UserRecord Sample for ${taskExternalID} ---`);
+
+    // Find all resource links that belong to the task
+    const links = regularResourceLinkManager.links.filter(l => l.workItemExternalID === taskExternalID);
+    if (!links || links.length === 0) {
+        console.log('  (no regular resource links found for this task)');
+    }
+
+    links.forEach((link, idx) => {
+        try {
+            const userKey = '/User/' + link.resourceExternalID;
+            const userRec = dataModel.get(userKey);
+            console.log(`  Link ${idx + 1}: resourceExternalID=${link.resourceExternalID}, displayName=${link.displayName}, resourceLinkExternalID=${link.externalid}`);
+            if (userRec) {
+                console.log(`    -> Found UserRecord: userKey=${userKey}, displayName=${userRec.userDisplayName}, jobTitle=${userRec.userJobTitle}`);
+                // Current month forecast until EOM (days)
+                const currentForecastUntilEOM = userRec.forecastTaskAssignmentUntilEOM || userRec.forecastProjectAssignmentUntilEOM || 0;
+                // Determine authoritative total: Forecast Until EOM + all future months from next month until end
+                const nextMonthInfo = getNextMonthYear(new Date(userRec.thisMonday || thisMonday));
+                let futureField = (laborBudget === 'Task Assignment') ? 'taskAssignment' : 'projectAssignment';
+                const futureSumFromUser = userRec.calculateTotalFrom(futureField, nextMonthInfo.year, nextMonthInfo.month) || 0;
+                const authoritativeTotalDays = (laborBudget === 'Task Assignment') ? userRec.getForecastEffortBalanceTaskAssignment() : userRec.getForecastEffortBalanceProjectAssignment();
+
+                console.log(`       Forecast Until EOM (days): ${currentForecastUntilEOM}`);
+                console.log(`       Future months sum from next month (${nextMonthInfo.year}-${String(nextMonthInfo.month).padStart(2,'0')}) (days): ${futureSumFromUser}`);
+                console.log(`       Authoritative total (days) [Forecast Until EOM + future months]: ${authoritativeTotalDays}`);
+
+                // Print monthly records summary (helpful for tracing where future sums come from)
+                for (const [k, rec] of userRec.monthlyRecords) {
+                    try {
+                        // month key is stored as YYYY-MM
+                        const parts = String(k).split('-');
+                        const yr = Number(parts[0]) || 0;
+                        const mon = Number(parts[1]) || 0;
+
+                        // choose the relevant effort field based on laborBudget
+                        const effortDays = (laborBudget === 'Task Assignment') ? (rec.taskAssignment || 0) : (rec.projectAssignment || 0);
+                        const effortHours = effortDays * HOURS_PER_DAY;
+
+                        // Lookup job-title rate for that month/year
+                        const jobRates = jobTitlesRateModel && typeof jobTitlesRateModel.getRates === 'function'
+                            ? jobTitlesRateModel.getRates(userRec.userJobTitleExternalID, mon, yr)
+                            : { regularRate: { value: 0, currency: '' } };
+
+                        const rateValue = Number(jobRates?.regularRate?.value) || 0;
+                        const rateCurrency = jobRates?.regularRate?.currency || '';
+
+                        // Determine exchange rate to project currency for that month/year
+                        let exch = 1;
+                        try {
+                            exch = (currencyType !== 'AUD') ? exchangeTable.getExchangeRateForCurrencyAndMonth(currencyType, mon, yr) : 1;
+                        } catch (e) {
+                            exch = 1;
+                        }
+                        // If the rate's currency is not AUD and the conversion above is for project currency,
+                        // keep exch=1 when the rate is already in project currency (heuristic same as elsewhere)
+                        if (rateCurrency && rateCurrency !== 'AUD' && rateCurrency === currencyType) {
+                            exch = 1;
+                        }
+
+                        const feesSource = effortHours * rateValue; // fee in rate's currency
+                        const feesConverted = convertToProjectCurrency(feesSource, rateCurrency || '', currencyType, exch, mon, yr);
+
+                        console.log(`       month=${k}: projectAssignment=${rec.projectAssignment || 0}, taskAssignment=${rec.taskAssignment || 0}, actualApproved=${rec.actualApproved || 0}` +
+                            ` | rate=${rateValue}${rateCurrency ? ' ' + rateCurrency : ''}, exchange=${exch}, feesSource=${feesSource.toFixed(2)}${rateCurrency || ''}, feesConverted=${feesConverted.toFixed(2)}${currencyType}`);
+                    } catch (e) {
+                        console.warn('       Error printing monthlyRecords detail', e, k, rec);
+                        console.log(`       month=${k}: projectAssignment=${rec.projectAssignment || 0}, taskAssignment=${rec.taskAssignment || 0}, actualApproved=${rec.actualApproved || 0}`);
+                    }
+                }
+
+                // Now compare with project model if available
+                const workItem = projectRemainingForecastFeesModel && projectRemainingForecastFeesModel.getWorkItem(taskExternalID);
+                if (workItem) {
+                    const resourceLinkRecord = workItem.getResourceLink(link.resourceExternalID);
+                    if (resourceLinkRecord) {
+                        // Project model current month and future sums (days)
+                        let projectCurrentDays = 0;
+                        let projectFutureDays = 0;
+                        let projectTotalDays = 0;
+                        for (const yrRec of resourceLinkRecord.yearMonthlyRecords) {
+                            const d = Number(yrRec.assignmentInDays) || 0;
+                            // compare by year/month
+                            if (yrRec.year === thisYear && yrRec.month === thisMonth) {
+                                projectCurrentDays += d;
+                            } else {
+                                // if later than current month
+                                const recDate = new Date(yrRec.year, yrRec.month - 1, 1);
+                                const cutoff = new Date(thisYear, thisMonth - 1, 1);
+                                if (recDate >= cutoff) {
+                                    // include current-month already handled; this will add current again if recDate==cutoff but we already separated
+                                    if (!(yrRec.year === thisYear && yrRec.month === thisMonth)) {
+                                        projectFutureDays += d;
+                                    }
+                                }
+                            }
+                            projectTotalDays += d;
+                        }
+                        // As saved, Forecast Effort Balance is in hours: getTotalAssignmentInHours
+                        const projectTotalHours = resourceLinkRecord.getTotalAssignmentInHours();
+                        const projectTotalDaysFromHours = projectTotalHours / HOURS_PER_DAY;
+
+                        console.log(`       Project model -> currentMonthDays=${projectCurrentDays}, futureDays=${projectFutureDays}, totalDays(stored)=${projectTotalDays}, totalHours(calc)=${projectTotalHours}, totalDays(fromHours)=${projectTotalDaysFromHours}`);
+
+                        const deltaDays = projectTotalDaysFromHours - authoritativeTotalDays;
+                        const deltaHours = projectTotalHours - (authoritativeTotalDays * HOURS_PER_DAY);
+                        console.log(`       Delta (project - authoritative): ${deltaDays.toFixed(3)} days (${deltaHours.toFixed(2)} hours)`);
+                    } else {
+                        console.log('    -> No ResourceLinkRecord found in project model for this user');
+                    }
+                } else {
+                    console.log('    -> No workItem found in project model for this task');
+                }
+            } else {
+                console.log(`    -> No UserRecord found for userKey=${userKey}`);
+            }
+        } catch (e) {
+            console.warn('  Error printing link/user record', e, link);
+        }
+    });
+
+    console.log(`--- End of UserRecord sample for ${taskExternalID} ---`);
+}
+
+// Expose authoritative UserRecord printer
+window.printTaskUserRecordSample = printTaskUserRecordSample;
